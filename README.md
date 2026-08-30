@@ -16,6 +16,8 @@ Ratings start at 1000. The bot uses a standard Elo K-factor of 32 and stores eve
 5. For instant slash-command registration, add `DISCORD_GUILD_ID=` followed by your server ID. Enable **Developer Mode** in Discord, right-click your server, and choose **Copy Server ID**.
 6. Double-click `start_bot.bat` to run the bot.
 
+To update later, double-click `update_bot.bat`. It stops the bot, downloads the latest GitHub version, updates dependencies, and starts the bot again. It uses fast-forward-only Git updates and will stop safely if the folder has local changes.
+
 The first run creates a private `.venv` folder and installs everything automatically. Leave the black bot window open while you want the bot online.
 
 This bot uses slash commands only, so **Message Content Intent** does not need to be enabled in the Discord Developer Portal.
