@@ -44,7 +44,7 @@ Example for a 2v2 Gnashers match:
 
 `/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave stats:`
 
-For the `stats` field, enter one line per player. Gnashers requires `kills`, `deaths`, and `score`:
+For the `stats` field, enter one stat line per player, separated by semicolons. Gnashers requires `kills`, `deaths`, and `score`:
 
 ```text
 @Alice kills=15 deaths=8 score=250
@@ -52,6 +52,10 @@ For the `stats` field, enter one line per player. Gnashers requires `kills`, `de
 @Carol kills=8 deaths=13 score=180
 @Dave kills=10 deaths=13 score=190
 ```
+
+In Discord, enter that as one line using semicolons:
+
+`@Alice kills=15 deaths=8 score=250; @Bob kills=11 deaths=10 score=210; @Carol kills=8 deaths=13 score=180; @Dave kills=10 deaths=13 score=190`
 
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, and `score` on every line.
 

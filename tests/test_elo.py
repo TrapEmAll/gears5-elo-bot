@@ -33,6 +33,14 @@ class EloTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_match_stats("1 kills=10 deaths=3 score=100 captures=1", "gnashers_1v1", [1])
 
+    def test_parse_semicolon_separated_stats(self):
+        stats = parse_match_stats(
+            "1 kills=10 deaths=3 score=100; 2 kills=8 deaths=5 score=90",
+            "gnashers_1v1",
+            [1, 2],
+        )
+        self.assertEqual(stats[2]["kills"], 8)
+
 
 if __name__ == "__main__":
     unittest.main()

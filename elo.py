@@ -62,7 +62,9 @@ def parse_match_stats(raw: str, mode: str, player_ids: Iterable[int]) -> dict[in
         raise ValueError("Enter one stat line for every player")
     results: dict[int, dict[str, int]] = {}
     required = set(stat_names(mode))
-    for line in raw.splitlines():
+    # Discord slash-command text options are single-line fields, so accept
+    # semicolons as separators as well as newlines for pasted/test input.
+    for line in re.split(r"[;\n]+", raw):
         pieces = line.split()
         if not pieces:
             continue
