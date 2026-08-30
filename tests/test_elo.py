@@ -1,6 +1,6 @@
 import unittest
 
-from elo import calculate_match_changes, parse_match_stats, parse_team
+from elo import calculate_match_changes, parse_match_stats, parse_player_stats, parse_team
 
 
 class EloTests(unittest.TestCase):
@@ -40,6 +40,10 @@ class EloTests(unittest.TestCase):
             [1, 2],
         )
         self.assertEqual(stats[2]["kills"], 8)
+
+    def test_parse_player_stats(self):
+        stats = parse_player_stats("kills=10 deaths=3 score=100", "gnashers_1v1")
+        self.assertEqual(stats["score"], 100)
 
 
 if __name__ == "__main__":

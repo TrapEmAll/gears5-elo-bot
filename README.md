@@ -35,16 +35,16 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 ## Commands
 
 - `/modes` — list supported modes.
-- `/match` — record a match. Enter players as comma-separated mentions or IDs.
+- `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode.
 - `/rating` — show one player's ratings across modes.
 - `/stats` — show a player's totals and per-match averages for a mode.
 
 Example for a 2v2 Gnashers match:
 
-`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave stats:`
+`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave`
 
-For the `stats` field, enter one stat line per player, separated by semicolons. Gnashers requires `kills`, `deaths`, and `score`:
+After submitting the match, the bot opens a small form for each player. Enter only that player's stats. Gnashers requires `kills`, `deaths`, and `score`:
 
 ```text
 @Alice kills=15 deaths=8 score=250
@@ -52,10 +52,6 @@ For the `stats` field, enter one stat line per player, separated by semicolons. 
 @Carol kills=8 deaths=13 score=180
 @Dave kills=10 deaths=13 score=190
 ```
-
-In Discord, enter that as one line using semicolons:
-
-`@Alice kills=15 deaths=8 score=250; @Bob kills=11 deaths=10 score=210; @Carol kills=8 deaths=13 score=180; @Dave kills=10 deaths=13 score=190`
 
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, and `score` on every line.
 

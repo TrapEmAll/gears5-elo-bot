@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from elo import MODES, calculate_match_changes, mode_label, parse_match_stats, parse_team, stat_names, team_size
+from elo import MODES, calculate_match_changes, mode_label, parse_player_stats, parse_team, stat_names, team_size
 
 load_dotenv()
 
@@ -154,6 +154,50 @@ bot = GearsEloBot()
 mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mode, info in MODES.items()]
 
 
+class PlayerStatsModal(discord.ui.Modal):
+    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int):
+        self.mode = mode
+        self.winner = winner
+        self.team_one = team_one
+        self.team_two = team_two
+        self.player_ids = player_ids
+        self.stats = stats
+        self.index = index
+        player_id = player_ids[index]
+        player_name = bot.get_user(player_id)
+        name = player_name.display_name if player_name else str(player_id)
+        super().__init__(title=f"Stats: {name}"[:45], timeout=600)
+        self.stat_input = discord.ui.TextInput(
+            label=f"Enter stats for {name}"[:45],
+            placeholder="kills=15 deaths=8 score=250" if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 score=250",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.stat_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player_id = self.player_ids[self.index]
+        try:
+            self.stats[player_id] = parse_player_stats(str(self.stat_input.value), self.mode)
+        except ValueError as error:
+            await interaction.response.send_message(f"Invalid stats for <@{player_id}>: {error}. Start `/match` again to retry.", ephemeral=True)
+            return
+
+        next_index = self.index + 1
+        if next_index < len(self.player_ids):
+            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index))
+            return
+
+        try:
+            changes = bot.database.record_match(interaction.guild_id, self.mode, self.winner, self.team_one, self.team_two, self.stats, interaction.user.id)
+        except sqlite3.Error as error:
+            await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
+            return
+        change_text = " · ".join(f"<@{change.user_id}> {change.new_rating} ({change.delta:+d})" for change in changes)
+        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n{change_text}\nStats saved for {len(self.stats)} players.")
+
+
 @bot.tree.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
 async def modes(interaction: discord.Interaction):
     lines = [f"• {mode_label(mode)} — {team_size(mode)}v{team_size(mode)}" for mode in MODES]
@@ -161,23 +205,22 @@ async def modes(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")
-@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs", stats="One line per player: @name kills=10 deaths=2 score=100 ...")
+@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
-async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, stats: str):
+async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str):
     try:
         size = team_size(mode.value)
         first = parse_team(team_one, size)
         second = parse_team(team_two, size)
         if set(first) & set(second):
             raise ValueError("A player cannot be on both teams")
-        match_stats = parse_match_stats(stats, mode.value, first + second)
-        changes = bot.database.record_match(interaction.guild_id, mode.value, int(winner.value), first, second, match_stats, interaction.user.id)
+        player_ids = first + second
+        await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0))
+        return
     except (ValueError, sqlite3.Error) as error:
         await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
         return
-    change_text = " · ".join(f"<@{c.user_id}> {c.new_rating} ({c.delta:+d})" for c in changes)
-    await interaction.response.send_message(f"**{mode_label(mode.value)} recorded** — Team {winner.value} wins\n{change_text}\nStats saved for {len(match_stats)} players.")
 
 
 @bot.tree.command(name="leaderboard", description="Show the top ratings for a mode")

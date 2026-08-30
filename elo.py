@@ -55,6 +55,28 @@ def stat_names(mode: str) -> tuple[str, ...]:
     return CONTROL_STATS if mode.startswith("control_") else GNASHERS_STATS
 
 
+def parse_player_stats(raw: str, mode: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    required = set(stat_names(mode))
+    for piece in raw.replace(",", " ").split():
+        if "=" not in piece:
+            raise ValueError(f"Expected key=value, such as kills=10")
+        key, value = piece.split("=", 1)
+        if key not in required:
+            raise ValueError(f"`{key}` is not used in {mode_label(mode)}")
+        try:
+            number = int(value)
+        except ValueError as error:
+            raise ValueError(f"`{value}` is not a whole number") from error
+        if number < 0:
+            raise ValueError("Stats cannot be negative")
+        values[key] = number
+    missing = required - values.keys()
+    if missing:
+        raise ValueError(f"Missing {', '.join(sorted(missing))}")
+    return values
+
+
 def parse_match_stats(raw: str, mode: str, player_ids: Iterable[int]) -> dict[int, dict[str, int]]:
     """Parse one line per player: <mention-or-id> kills=10 deaths=3 ..."""
     expected_players = set(player_ids)
@@ -73,24 +95,10 @@ def parse_match_stats(raw: str, mode: str, player_ids: Iterable[int]) -> dict[in
             raise ValueError(f"Stats include player {player}, who is not in this match")
         if player in results:
             raise ValueError(f"Stats were entered more than once for player {player}")
-        values: dict[str, int] = {}
-        for piece in pieces[1:]:
-            if "=" not in piece:
-                raise ValueError(f"Expected key=value in stat line: `{piece}`")
-            key, value = piece.split("=", 1)
-            if key not in required:
-                raise ValueError(f"`{key}` is not used in {mode_label(mode)}")
-            try:
-                number = int(value)
-            except ValueError as error:
-                raise ValueError(f"`{value}` is not a whole number") from error
-            if number < 0:
-                raise ValueError("Stats cannot be negative")
-            values[key] = number
-        missing = required - values.keys()
-        if missing:
-            raise ValueError(f"Missing {', '.join(sorted(missing))} for player {player}")
-        results[player] = values
+        try:
+            results[player] = parse_player_stats(" ".join(pieces[1:]), mode)
+        except ValueError as error:
+            raise ValueError(f"Player {player}: {error}") from error
     if set(results) != expected_players:
         missing = expected_players - set(results)
         raise ValueError(f"Missing stat lines for player(s): {', '.join(map(str, sorted(missing)))}")
