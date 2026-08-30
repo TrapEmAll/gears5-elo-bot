@@ -36,9 +36,21 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/match` — record a match. Enter players as comma-separated mentions or IDs.
 - `/leaderboard` — show the top ten players for a mode.
 - `/rating` — show one player's ratings across modes.
+- `/stats` — show a player's totals and per-match averages for a mode.
 
 Example for a 2v2 Gnashers match:
 
-`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave`
+`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave stats:`
+
+For the `stats` field, enter one line per player. Gnashers requires `kills`, `deaths`, and `score`:
+
+```text
+@Alice kills=15 deaths=8 score=250
+@Bob kills=11 deaths=10 score=210
+@Carol kills=8 deaths=13 score=180
+@Dave kills=10 deaths=13 score=190
+```
+
+Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, and `score` on every line.
 
 The first time the bot is started, global slash-command sync can take a little while. To make commands appear immediately in one server during development, set up guild-scoped sync before deploying broadly.

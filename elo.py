@@ -16,6 +16,8 @@ MODES: dict[str, dict[str, object]] = {
     "gnashers_2v2": {"label": "2v2 Gnashers", "team_size": 2},
 }
 MENTION_RE = re.compile(r"^(?:<@!?(\d+)>|(\d+))$")
+CONTROL_STATS = ("captures", "breaks", "kills", "deaths", "assists", "score")
+GNASHERS_STATS = ("kills", "deaths", "score")
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,50 @@ def parse_team(raw: str, expected_size: int) -> list[int]:
     if len(set(ids)) != len(ids):
         raise ValueError("Each player must be listed only once")
     return ids
+
+
+def stat_names(mode: str) -> tuple[str, ...]:
+    return CONTROL_STATS if mode.startswith("control_") else GNASHERS_STATS
+
+
+def parse_match_stats(raw: str, mode: str, player_ids: Iterable[int]) -> dict[int, dict[str, int]]:
+    """Parse one line per player: <mention-or-id> kills=10 deaths=3 ..."""
+    expected_players = set(player_ids)
+    if not raw.strip():
+        raise ValueError("Enter one stat line for every player")
+    results: dict[int, dict[str, int]] = {}
+    required = set(stat_names(mode))
+    for line in raw.splitlines():
+        pieces = line.split()
+        if not pieces:
+            continue
+        player = parse_team(pieces[0], 1)[0]
+        if player not in expected_players:
+            raise ValueError(f"Stats include player {player}, who is not in this match")
+        if player in results:
+            raise ValueError(f"Stats were entered more than once for player {player}")
+        values: dict[str, int] = {}
+        for piece in pieces[1:]:
+            if "=" not in piece:
+                raise ValueError(f"Expected key=value in stat line: `{piece}`")
+            key, value = piece.split("=", 1)
+            if key not in required:
+                raise ValueError(f"`{key}` is not used in {mode_label(mode)}")
+            try:
+                number = int(value)
+            except ValueError as error:
+                raise ValueError(f"`{value}` is not a whole number") from error
+            if number < 0:
+                raise ValueError("Stats cannot be negative")
+            values[key] = number
+        missing = required - values.keys()
+        if missing:
+            raise ValueError(f"Missing {', '.join(sorted(missing))} for player {player}")
+        results[player] = values
+    if set(results) != expected_players:
+        missing = expected_players - set(results)
+        raise ValueError(f"Missing stat lines for player(s): {', '.join(map(str, sorted(missing)))}")
+    return results
 
 
 def expected_score(team_rating: float, opponent_rating: float) -> float:

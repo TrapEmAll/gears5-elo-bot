@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from elo import MODES, calculate_match_changes, mode_label, parse_team, team_size
+from elo import MODES, calculate_match_changes, mode_label, parse_match_stats, parse_team, stat_names, team_size
 
 load_dotenv()
 
@@ -46,6 +46,20 @@ class EloDatabase:
                 created_by INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS match_player_stats (
+                match_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                captures INTEGER NOT NULL DEFAULT 0,
+                breaks INTEGER NOT NULL DEFAULT 0,
+                kills INTEGER NOT NULL DEFAULT 0,
+                deaths INTEGER NOT NULL DEFAULT 0,
+                assists INTEGER NOT NULL DEFAULT 0,
+                score INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (match_id, user_id),
+                FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
+            );
             """
         )
         self.connection.commit()
@@ -60,14 +74,20 @@ class EloDatabase:
         ).fetchone()
         return row["rating"] if row else DEFAULT_RATING
 
-    def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], created_by: int):
+    def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
         rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
         changes = calculate_match_changes(mode, rated_one, rated_two, winner)
-        self.connection.execute(
+        cursor = self.connection.execute(
             "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by) VALUES (?, ?, ?, ?, ?, ?)",
             (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by),
         )
+        match_id = cursor.lastrowid
+        for user_id, values in stats.items():
+            self.connection.execute(
+                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("score", 0)),
+            )
         for change in changes:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
             self.connection.execute(
@@ -82,6 +102,17 @@ class EloDatabase:
             )
         self.connection.commit()
         return changes
+
+    def player_stat_summary(self, guild_id: int, user_id: int, mode: str):
+        return self.connection.execute(
+            """
+            SELECT COUNT(*) AS matches, SUM(captures) AS captures, SUM(breaks) AS breaks,
+                   SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(assists) AS assists,
+                   SUM(score) AS score
+            FROM match_player_stats WHERE guild_id=? AND user_id=? AND mode=?
+            """,
+            (guild_id, user_id, mode),
+        ).fetchone()
 
     def leaderboard(self, guild_id: int, mode: str, limit: int = 10):
         return self.connection.execute(
@@ -130,22 +161,23 @@ async def modes(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")
-@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs")
+@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs", stats="One line per player: @name kills=10 deaths=2 score=100 ...")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
-async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str):
+async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, stats: str):
     try:
         size = team_size(mode.value)
         first = parse_team(team_one, size)
         second = parse_team(team_two, size)
         if set(first) & set(second):
             raise ValueError("A player cannot be on both teams")
-        changes = bot.database.record_match(interaction.guild_id, mode.value, int(winner.value), first, second, interaction.user.id)
+        match_stats = parse_match_stats(stats, mode.value, first + second)
+        changes = bot.database.record_match(interaction.guild_id, mode.value, int(winner.value), first, second, match_stats, interaction.user.id)
     except (ValueError, sqlite3.Error) as error:
         await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
         return
     change_text = " · ".join(f"<@{c.user_id}> {c.new_rating} ({c.delta:+d})" for c in changes)
-    await interaction.response.send_message(f"**{mode_label(mode.value)} recorded** — Team {winner.value} wins\n{change_text}")
+    await interaction.response.send_message(f"**{mode_label(mode.value)} recorded** — Team {winner.value} wins\n{change_text}\nStats saved for {len(match_stats)} players.")
 
 
 @bot.tree.command(name="leaderboard", description="Show the top ratings for a mode")
@@ -170,6 +202,22 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
         return
     lines = [f"{mode_label(row['mode'])}: **{row['rating']}** ({row['wins']}-{row['losses']})" for row in rows]
     await interaction.response.send_message(f"**{member.display_name}'s ratings**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="stats", description="Show a player's match-stat totals and averages")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def stats(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    row = bot.database.player_stat_summary(interaction.guild_id, member.id, mode.value)
+    if not row or not row["matches"]:
+        await interaction.response.send_message(f"<@{member.id}> has no recorded stats for **{mode_label(mode.value)}** yet.")
+        return
+    matches_played = row["matches"]
+    names = stat_names(mode.value)
+    totals = " · ".join(f"{name.title()}: **{row[name]}**" for name in names)
+    averages = " · ".join(f"{name.title()}: **{row[name] / matches_played:.1f}**" for name in names)
+    await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)} stats**\nMatches: **{matches_played}**\nTotals — {totals}\nAverages — {averages}")
 
 
 @bot.event
