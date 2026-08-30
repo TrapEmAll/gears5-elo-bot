@@ -7,12 +7,35 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
     Where-Object { $_.CommandLine -like "*$projectRoot*bot.py*" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-Write-Host "Downloading the latest version from GitHub..."
-git pull --ff-only origin main
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Update stopped. Git could not fast-forward this folder. Check for local changes." -ForegroundColor Red
-    Read-Host "Press Enter to close"
-    exit 1
+if (Test-Path ".git") {
+    Write-Host "Downloading the latest version from GitHub..."
+    git pull --ff-only origin main
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Update stopped. Git could not fast-forward this folder. Check for local changes." -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+} else {
+    Write-Host "This folder came from a ZIP download. Downloading the latest ZIP instead..."
+    $tempRoot = Join-Path $env:TEMP "gears5-elo-bot-update-$PID"
+    $zipPath = Join-Path $tempRoot "main.zip"
+    $sourceRoot = Join-Path $tempRoot "gears5-elo-bot-main"
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    try {
+        Invoke-WebRequest -Uri "https://github.com/TrapEmAll/gears5-elo-bot/archive/refs/heads/main.zip" -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $tempRoot -Force
+        Get-ChildItem -LiteralPath $sourceRoot -Force |
+            Where-Object { $_.Name -notin @(".env", ".venv", "gears5_elo.sqlite3") } |
+            Copy-Item -Destination $projectRoot -Recurse -Force
+    } catch {
+        Write-Host "ZIP update failed: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    } finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 if (-not (Test-Path ".venv\Scripts\python.exe")) {
