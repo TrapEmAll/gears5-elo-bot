@@ -1,6 +1,6 @@
 import unittest
 
-from elo import calculate_match_changes, parse_match_stats, parse_player_stats, parse_team
+from elo import calculate_match_changes, canonical_matchup, parse_match_stats, parse_player_stats, parse_team, team_key
 
 
 class EloTests(unittest.TestCase):
@@ -48,6 +48,13 @@ class EloTests(unittest.TestCase):
     def test_gnashers_2v2_tracks_assists(self):
         stats = parse_player_stats("kills=10 deaths=3 assists=6 damage=500 score=100", "gnashers_2v2")
         self.assertEqual(stats["assists"], 6)
+
+    def test_team_matchup_is_order_independent(self):
+        self.assertEqual(team_key([2, 1]), "1,2")
+        first = canonical_matchup([1, 2], [3, 4])
+        second = canonical_matchup([4, 3], [2, 1])
+        self.assertEqual(first[:2], second[:2])
+        self.assertNotEqual(first[2], second[2])
 
 
 if __name__ == "__main__":

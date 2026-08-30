@@ -39,6 +39,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/leaderboard` — show the top ten players for a mode.
 - `/rating` — show one player's ratings across modes.
 - `/stats` — show a player's totals and per-match averages for a mode.
+- `/teamstats` — show the head-to-head record and combined totals for two exact teams.
 
 Example for a 2v2 Gnashers match:
 
@@ -54,6 +55,8 @@ After submitting the match, the bot opens a small form for each player. Enter on
 ```
 
 For 2v2 Gnashers, use for example: `kills=15 deaths=8 assists=4 damage=500 score=250`.
+
+To check a recurring matchup, use `/teamstats`. For example: `/teamstats mode:2v2 Gnashers team_one:@Alice, @Bob team_two:@John, @Jim`. The teams are matched by their player combinations, regardless of which side was entered as Team 1.
 
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, `damage`, and `score` on every line.
 

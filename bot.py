@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from elo import MODES, calculate_match_changes, mode_label, parse_player_stats, parse_team, stat_names, team_size
+from elo import MODES, calculate_match_changes, canonical_matchup, mode_label, parse_player_stats, parse_team, stat_names, team_size
 
 load_dotenv()
 
@@ -61,6 +61,30 @@ class EloDatabase:
                 PRIMARY KEY (match_id, user_id),
                 FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS team_matchups (
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team_a TEXT NOT NULL,
+                team_b TEXT NOT NULL,
+                games INTEGER NOT NULL DEFAULT 0,
+                team_a_wins INTEGER NOT NULL DEFAULT 0,
+                team_b_wins INTEGER NOT NULL DEFAULT 0,
+                team_a_captures INTEGER NOT NULL DEFAULT 0,
+                team_a_breaks INTEGER NOT NULL DEFAULT 0,
+                team_a_kills INTEGER NOT NULL DEFAULT 0,
+                team_a_deaths INTEGER NOT NULL DEFAULT 0,
+                team_a_assists INTEGER NOT NULL DEFAULT 0,
+                team_a_damage INTEGER NOT NULL DEFAULT 0,
+                team_a_score INTEGER NOT NULL DEFAULT 0,
+                team_b_captures INTEGER NOT NULL DEFAULT 0,
+                team_b_breaks INTEGER NOT NULL DEFAULT 0,
+                team_b_kills INTEGER NOT NULL DEFAULT 0,
+                team_b_deaths INTEGER NOT NULL DEFAULT 0,
+                team_b_assists INTEGER NOT NULL DEFAULT 0,
+                team_b_damage INTEGER NOT NULL DEFAULT 0,
+                team_b_score INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, mode, team_a, team_b)
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -92,6 +116,20 @@ class EloDatabase:
                 "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0)),
             )
+        team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
+        team_one_values = self._sum_team_stats(team_one, stats)
+        team_two_values = self._sum_team_stats(team_two, stats)
+        values_a = team_one_values if first_is_a else team_two_values
+        values_b = team_two_values if first_is_a else team_one_values
+        winner_is_a = (winner == 1) == first_is_a
+        columns = ["captures", "breaks", "kills", "deaths", "assists", "damage", "score"]
+        insert_columns = ", ".join(["guild_id", "mode", "team_a", "team_b", "games", "team_a_wins", "team_b_wins"] + [f"team_a_{column}" for column in columns] + [f"team_b_{column}" for column in columns])
+        placeholders = ", ".join("?" for _ in insert_columns.split(", "))
+        values = [guild_id, mode, team_a, team_b, 1, int(winner_is_a), int(not winner_is_a)]
+        values.extend(values_a[column] for column in columns)
+        values.extend(values_b[column] for column in columns)
+        updates = ", ".join(["games=games+1", "team_a_wins=team_a_wins+excluded.team_a_wins", "team_b_wins=team_b_wins+excluded.team_b_wins"] + [f"team_a_{column}=team_a_{column}+excluded.team_a_{column}" for column in columns] + [f"team_b_{column}=team_b_{column}+excluded.team_b_{column}" for column in columns])
+        self.connection.execute(f"INSERT INTO team_matchups ({insert_columns}) VALUES ({placeholders}) ON CONFLICT(guild_id, mode, team_a, team_b) DO UPDATE SET {updates}", values)
         for change in changes:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
             self.connection.execute(
@@ -106,6 +144,18 @@ class EloDatabase:
             )
         self.connection.commit()
         return changes
+
+    @staticmethod
+    def _sum_team_stats(player_ids: list[int], stats: dict[int, dict[str, int]]) -> dict[str, int]:
+        return {column: sum(stats[player_id].get(column, 0) for player_id in player_ids) for column in ("captures", "breaks", "kills", "deaths", "assists", "damage", "score")}
+
+    def matchup_stats(self, guild_id: int, mode: str, team_one: list[int], team_two: list[int]):
+        team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
+        row = self.connection.execute(
+            "SELECT * FROM team_matchups WHERE guild_id=? AND mode=? AND team_a=? AND team_b=?",
+            (guild_id, mode, team_a, team_b),
+        ).fetchone()
+        return row, first_is_a
 
     def player_stat_summary(self, guild_id: int, user_id: int, mode: str):
         return self.connection.execute(
@@ -266,6 +316,37 @@ async def stats(interaction: discord.Interaction, mode: app_commands.Choice[str]
     totals = " · ".join(f"{name.title()}: **{row[name]}**" for name in names)
     averages = " · ".join(f"{name.title()}: **{row[name] / matches_played:.1f}**" for name in names)
     await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)} stats**\nMatches: **{matches_played}**\nTotals — {totals}\nAverages — {averages}")
+
+
+@bot.tree.command(name="teamstats", description="Show the head-to-head record for two exact teams")
+@app_commands.describe(mode="Game mode", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs")
+@app_commands.choices(mode=mode_choices)
+async def teamstats(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
+    try:
+        size = team_size(mode.value)
+        first = parse_team(team_one, size)
+        second = parse_team(team_two, size)
+        if set(first) & set(second):
+            raise ValueError("A player cannot be on both teams")
+    except ValueError as error:
+        await interaction.response.send_message(f"Could not read teams: {error}", ephemeral=True)
+        return
+    row, first_is_a = bot.database.matchup_stats(interaction.guild_id, mode.value, first, second)
+    if not row:
+        await interaction.response.send_message(f"No recorded matches yet for this exact matchup in **{mode_label(mode.value)}**.")
+        return
+    first_wins = row["team_a_wins"] if first_is_a else row["team_b_wins"]
+    second_wins = row["team_b_wins"] if first_is_a else row["team_a_wins"]
+    first_name = " + ".join(f"<@{player_id}>" for player_id in first)
+    second_name = " + ".join(f"<@{player_id}>" for player_id in second)
+    first_prefix = "team_a_" if first_is_a else "team_b_"
+    second_prefix = "team_b_" if first_is_a else "team_a_"
+    first_totals = " · ".join(f"{name.title()}: **{row[first_prefix + name]}**" for name in stat_names(mode.value))
+    second_totals = " · ".join(f"{name.title()}: **{row[second_prefix + name]}**" for name in stat_names(mode.value))
+    await interaction.response.send_message(
+        f"**{mode_label(mode.value)} team matchup**\n{first_name}: **{first_wins} wins**\n{second_name}: **{second_wins} wins**\nGames: **{row['games']}**\n"
+        f"{first_name} totals — {first_totals}\n{second_name} totals — {second_totals}"
+    )
 
 
 @bot.event

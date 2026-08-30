@@ -52,6 +52,16 @@ def parse_team(raw: str, expected_size: int) -> list[int]:
     return ids
 
 
+def team_key(player_ids: Iterable[int]) -> str:
+    return ",".join(map(str, sorted(player_ids)))
+
+
+def canonical_matchup(team_one: Iterable[int], team_two: Iterable[int]) -> tuple[str, str, bool]:
+    first = team_key(team_one)
+    second = team_key(team_two)
+    return (first, second, True) if first < second else (second, first, False)
+
+
 def stat_names(mode: str) -> tuple[str, ...]:
     if mode.startswith("control_"):
         return CONTROL_STATS
