@@ -169,7 +169,7 @@ class PlayerStatsModal(discord.ui.Modal):
         super().__init__(title=f"Stats: {name}"[:45], timeout=600)
         self.stat_input = discord.ui.TextInput(
             label=f"Enter stats for {name}"[:45],
-            placeholder="kills=15 deaths=8 score=250" if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 score=250",
+            placeholder=("kills=15 deaths=8 assists=4 score=250" if mode == "gnashers_2v2" else "kills=15 deaths=8 score=250") if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 score=250",
             style=discord.TextStyle.short,
             required=True,
             max_length=500,

@@ -44,7 +44,7 @@ Example for a 2v2 Gnashers match:
 
 `/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave`
 
-After submitting the match, the bot opens a small form for each player. Enter only that player's stats. Gnashers requires `kills`, `deaths`, and `score`:
+After submitting the match, the bot opens a small form for each player. Enter only that player's stats. 1v1 Gnashers requires `kills`, `deaths`, and `score`; 2v2 Gnashers also includes `assists`:
 
 ```text
 @Alice kills=15 deaths=8 score=250
@@ -52,6 +52,8 @@ After submitting the match, the bot opens a small form for each player. Enter on
 @Carol kills=8 deaths=13 score=180
 @Dave kills=10 deaths=13 score=190
 ```
+
+For 2v2 Gnashers, use for example: `kills=15 deaths=8 assists=4 score=250`.
 
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, and `score` on every line.
 

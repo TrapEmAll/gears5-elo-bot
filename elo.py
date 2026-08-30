@@ -18,6 +18,7 @@ MODES: dict[str, dict[str, object]] = {
 MENTION_RE = re.compile(r"^(?:<@!?(\d+)>|(\d+))$")
 CONTROL_STATS = ("captures", "breaks", "kills", "deaths", "assists", "score")
 GNASHERS_STATS = ("kills", "deaths", "score")
+GNASHERS_2V2_STATS = ("kills", "deaths", "assists", "score")
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,9 @@ def parse_team(raw: str, expected_size: int) -> list[int]:
 
 
 def stat_names(mode: str) -> tuple[str, ...]:
-    return CONTROL_STATS if mode.startswith("control_") else GNASHERS_STATS
+    if mode.startswith("control_"):
+        return CONTROL_STATS
+    return GNASHERS_2V2_STATS if mode == "gnashers_2v2" else GNASHERS_STATS
 
 
 def parse_player_stats(raw: str, mode: str) -> dict[str, int]:

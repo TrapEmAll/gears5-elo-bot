@@ -45,6 +45,10 @@ class EloTests(unittest.TestCase):
         stats = parse_player_stats("kills=10 deaths=3 score=100", "gnashers_1v1")
         self.assertEqual(stats["score"], 100)
 
+    def test_gnashers_2v2_tracks_assists(self):
+        stats = parse_player_stats("kills=10 deaths=3 assists=6 score=100", "gnashers_2v2")
+        self.assertEqual(stats["assists"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()
