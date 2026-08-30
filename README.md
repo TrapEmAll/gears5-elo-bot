@@ -13,11 +13,14 @@ Ratings start at 1000. The bot uses a standard Elo K-factor of 32 and stores eve
 2. Download this repository with **Code → Download ZIP**, then extract it, or clone it with Git.
 3. Double-click `setup_windows.ps1`. If Windows asks how to open it, right-click it and choose **Run with PowerShell**.
 4. Open the new `.env` file in Notepad and replace the placeholder after `DISCORD_TOKEN=` with your bot token.
-5. Double-click `start_bot.bat` to run the bot.
+5. For instant slash-command registration, add `DISCORD_GUILD_ID=` followed by your server ID. Enable **Developer Mode** in Discord, right-click your server, and choose **Copy Server ID**.
+6. Double-click `start_bot.bat` to run the bot.
 
 The first run creates a private `.venv` folder and installs everything automatically. Leave the black bot window open while you want the bot online.
 
 This bot uses slash commands only, so **Message Content Intent** does not need to be enabled in the Discord Developer Portal.
+
+If commands still do not appear, create a fresh invite from **OAuth2 → URL Generator** with both `bot` and `applications.commands` selected, then invite the bot again. The bot must also be online in the server where you are testing.
 
 ## Manual setup
 

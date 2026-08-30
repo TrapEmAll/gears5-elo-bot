@@ -15,6 +15,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
+GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DEFAULT_RATING = 1000
 
 
@@ -104,7 +105,13 @@ class GearsEloBot(commands.Bot):
         self.database = EloDatabase(DATABASE_PATH)
 
     async def setup_hook(self):
-        await self.tree.sync()
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            print(f"Slash commands synced to server {GUILD_ID}.")
+        else:
+            await self.tree.sync()
 
     async def close(self):
         self.database.close()
