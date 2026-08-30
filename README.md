@@ -7,7 +7,17 @@ A small Discord slash-command bot for tracking private matches between friends. 
 
 Ratings start at 1000. The bot uses a standard Elo K-factor of 32 and stores everything in a local SQLite database.
 
-## Setup
+## Setup on Windows
+
+1. Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/windows/). During installation, check **Add python.exe to PATH**.
+2. Download this repository with **Code → Download ZIP**, then extract it, or clone it with Git.
+3. Double-click `setup_windows.ps1`. If Windows asks how to open it, right-click it and choose **Run with PowerShell**.
+4. Open the new `.env` file in Notepad and replace the placeholder after `DISCORD_TOKEN=` with your bot token.
+5. Double-click `start_bot.bat` to run the bot.
+
+The first run creates a private `.venv` folder and installs everything automatically. Leave the black bot window open while you want the bot online.
+
+## Manual setup
 
 1. Create a Discord application and bot in the [Discord Developer Portal](https://discord.com/developers/applications).
 2. Enable the `bot` and `applications.commands` scopes in the install URL. The bot only needs the `Send Messages` permission.
