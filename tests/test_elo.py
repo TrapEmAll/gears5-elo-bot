@@ -22,8 +22,8 @@ class EloTests(unittest.TestCase):
 
     def test_parse_control_stats(self):
         stats = parse_match_stats(
-            "1 captures=2 breaks=3 kills=10 deaths=4 assists=5 score=99\n"
-            "2 captures=1 breaks=2 kills=8 deaths=6 assists=4 score=80",
+            "1 captures=2 breaks=3 kills=10 deaths=4 assists=5 damage=900 score=99\n"
+            "2 captures=1 breaks=2 kills=8 deaths=6 assists=4 damage=800 score=80",
             "control_1v1",
             [1, 2],
         )
@@ -31,22 +31,22 @@ class EloTests(unittest.TestCase):
 
     def test_gnashers_rejects_control_only_stats(self):
         with self.assertRaises(ValueError):
-            parse_match_stats("1 kills=10 deaths=3 score=100 captures=1", "gnashers_1v1", [1])
+            parse_match_stats("1 kills=10 deaths=3 damage=500 score=100 captures=1", "gnashers_1v1", [1])
 
     def test_parse_semicolon_separated_stats(self):
         stats = parse_match_stats(
-            "1 kills=10 deaths=3 score=100; 2 kills=8 deaths=5 score=90",
+            "1 kills=10 deaths=3 damage=500 score=100; 2 kills=8 deaths=5 damage=450 score=90",
             "gnashers_1v1",
             [1, 2],
         )
         self.assertEqual(stats[2]["kills"], 8)
 
     def test_parse_player_stats(self):
-        stats = parse_player_stats("kills=10 deaths=3 score=100", "gnashers_1v1")
+        stats = parse_player_stats("kills=10 deaths=3 damage=500 score=100", "gnashers_1v1")
         self.assertEqual(stats["score"], 100)
 
     def test_gnashers_2v2_tracks_assists(self):
-        stats = parse_player_stats("kills=10 deaths=3 assists=6 score=100", "gnashers_2v2")
+        stats = parse_player_stats("kills=10 deaths=3 assists=6 damage=500 score=100", "gnashers_2v2")
         self.assertEqual(stats["assists"], 6)
 
 

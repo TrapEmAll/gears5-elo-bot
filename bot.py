@@ -56,12 +56,16 @@ class EloDatabase:
                 kills INTEGER NOT NULL DEFAULT 0,
                 deaths INTEGER NOT NULL DEFAULT 0,
                 assists INTEGER NOT NULL DEFAULT 0,
+                damage INTEGER NOT NULL DEFAULT 0,
                 score INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (match_id, user_id),
                 FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
             );
             """
         )
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
+        if "damage" not in columns:
+            self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN damage INTEGER NOT NULL DEFAULT 0")
         self.connection.commit()
 
     def close(self):
@@ -85,8 +89,8 @@ class EloDatabase:
         match_id = cursor.lastrowid
         for user_id, values in stats.items():
             self.connection.execute(
-                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("score", 0)),
+                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0)),
             )
         for change in changes:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
@@ -108,6 +112,7 @@ class EloDatabase:
             """
             SELECT COUNT(*) AS matches, SUM(captures) AS captures, SUM(breaks) AS breaks,
                    SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(assists) AS assists,
+                   SUM(damage) AS damage,
                    SUM(score) AS score
             FROM match_player_stats WHERE guild_id=? AND user_id=? AND mode=?
             """,
@@ -169,7 +174,7 @@ class PlayerStatsModal(discord.ui.Modal):
         super().__init__(title=f"Stats: {name}"[:45], timeout=600)
         self.stat_input = discord.ui.TextInput(
             label=f"Enter stats for {name}"[:45],
-            placeholder=("kills=15 deaths=8 assists=4 score=250" if mode == "gnashers_2v2" else "kills=15 deaths=8 score=250") if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 score=250",
+            placeholder=("kills=15 deaths=8 assists=4 damage=500 score=250" if mode == "gnashers_2v2" else "kills=15 deaths=8 damage=500 score=250") if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 damage=500 score=250",
             style=discord.TextStyle.short,
             required=True,
             max_length=500,

@@ -16,9 +16,9 @@ MODES: dict[str, dict[str, object]] = {
     "gnashers_2v2": {"label": "2v2 Gnashers", "team_size": 2},
 }
 MENTION_RE = re.compile(r"^(?:<@!?(\d+)>|(\d+))$")
-CONTROL_STATS = ("captures", "breaks", "kills", "deaths", "assists", "score")
-GNASHERS_STATS = ("kills", "deaths", "score")
-GNASHERS_2V2_STATS = ("kills", "deaths", "assists", "score")
+CONTROL_STATS = ("captures", "breaks", "kills", "deaths", "assists", "damage", "score")
+GNASHERS_STATS = ("kills", "deaths", "damage", "score")
+GNASHERS_2V2_STATS = ("kills", "deaths", "assists", "damage", "score")
 
 
 @dataclass(frozen=True)

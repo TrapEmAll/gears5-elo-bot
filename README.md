@@ -44,17 +44,17 @@ Example for a 2v2 Gnashers match:
 
 `/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave`
 
-After submitting the match, the bot opens a small form for each player. Enter only that player's stats. 1v1 Gnashers requires `kills`, `deaths`, and `score`; 2v2 Gnashers also includes `assists`:
+After submitting the match, the bot opens a small form for each player. Enter only that player's stats. Every mode requires `damage`; 1v1 Gnashers requires `kills`, `deaths`, `damage`, and `score`; 2v2 Gnashers also includes `assists`:
 
 ```text
-@Alice kills=15 deaths=8 score=250
-@Bob kills=11 deaths=10 score=210
-@Carol kills=8 deaths=13 score=180
-@Dave kills=10 deaths=13 score=190
+@Alice kills=15 deaths=8 damage=500 score=250
+@Bob kills=11 deaths=10 damage=450 score=210
+@Carol kills=8 deaths=13 damage=400 score=180
+@Dave kills=10 deaths=13 damage=350 score=190
 ```
 
-For 2v2 Gnashers, use for example: `kills=15 deaths=8 assists=4 score=250`.
+For 2v2 Gnashers, use for example: `kills=15 deaths=8 assists=4 damage=500 score=250`.
 
-Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, and `score` on every line.
+Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, `damage`, and `score` on every line.
 
 The first time the bot is started, global slash-command sync can take a little while. To make commands appear immediately in one server during development, set up guild-scoped sync before deploying broadly.
