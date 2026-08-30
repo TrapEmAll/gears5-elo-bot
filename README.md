@@ -17,6 +17,8 @@ Ratings start at 1000. The bot uses a standard Elo K-factor of 32 and stores eve
 
 The first run creates a private `.venv` folder and installs everything automatically. Leave the black bot window open while you want the bot online.
 
+This bot uses slash commands only, so **Message Content Intent** does not need to be enabled in the Discord Developer Portal.
+
 ## Manual setup
 
 1. Create a Discord application and bot in the [Discord Developer Portal](https://discord.com/developers/applications).

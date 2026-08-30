@@ -98,7 +98,9 @@ class EloDatabase:
 class GearsEloBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
+        # This bot uses application (slash) commands only. Keeping the prefix
+        # disabled avoids requiring Discord's privileged Message Content intent.
+        super().__init__(command_prefix=None, intents=intents)
         self.database = EloDatabase(DATABASE_PATH)
 
     async def setup_hook(self):
