@@ -248,6 +248,8 @@ class EloDatabase:
                     params.append(values_b[column])
                 params.extend([guild_id, match["mode"], team_a, team_b])
                 self.connection.execute(f"UPDATE team_matchups SET {', '.join(updates)} WHERE guild_id=? AND mode=? AND team_a=? AND team_b=?", params)
+            self._revert_team_performance(guild_id, match["mode"], team_one, values_one, match["winner"] == 1)
+            self._revert_team_performance(guild_id, match["mode"], team_two, values_two, match["winner"] == 2)
             self.connection.execute("DELETE FROM matches WHERE id=?", (match["id"],))
             self.connection.commit()
         except Exception:
@@ -266,6 +268,20 @@ class EloDatabase:
         params = [guild_id, mode, team_key(player_ids), 1, int(won), int(not won)] + [values[column] for column in columns]
         updates = ", ".join(["games=games+1", "wins=wins+excluded.wins", "losses=losses+excluded.losses"] + [f"{column}={column}+excluded.{column}" for column in columns])
         self.connection.execute(f"INSERT INTO team_performance ({insert_columns}) VALUES ({placeholders}) ON CONFLICT(guild_id, mode, team_key) DO UPDATE SET {updates}", params)
+
+    def _revert_team_performance(self, guild_id: int, mode: str, player_ids: list[int], values: dict[str, int], won: bool):
+        key = team_key(player_ids)
+        deleted = self.connection.execute("DELETE FROM team_performance WHERE guild_id=? AND mode=? AND team_key=? AND games<=1", (guild_id, mode, key)).rowcount
+        if deleted:
+            return
+        columns = ["captures", "breaks", "kills", "deaths", "assists", "damage", "score"]
+        updates = ["games=games-1", "wins=wins-?", "losses=losses-?"]
+        params: list[int] = [int(won), int(not won)]
+        for column in columns:
+            updates.append(f"{column}={column}-?")
+            params.append(values[column])
+        params.extend([guild_id, mode, key])
+        self.connection.execute(f"UPDATE team_performance SET {', '.join(updates)} WHERE guild_id=? AND mode=? AND team_key=?", params)
 
     def matchup_stats(self, guild_id: int, mode: str, team_one: list[int], team_two: list[int]):
         team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
