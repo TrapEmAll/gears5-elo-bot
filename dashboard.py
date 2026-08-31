@@ -38,6 +38,16 @@ def mode_page(mode: str):
     return render_template_string(PAGE + """<div class=card><h2>{{ label }} leaderboard</h2>{% if rows %}<table><tr><th>#</th><th>Player ID</th><th>Elo</th><th>Record</th><th>Games</th></tr>{% for row in rows %}<tr><td>{{ loop.index }}</td><td><a href="/player/{{ row.user_id }}">{{ row.user_id }}</a></td><td>{{ row.rating }}</td><td>{{ row.wins }}-{{ row.losses }}</td><td>{{ row.games }}</td></tr>{% endfor %}</table>{% else %}<p>No matches recorded for this mode.</p>{% endif %}</div>""", rows=rows, label=MODES[mode], modes=MODES)
 
 
+@app.route("/share/<token>")
+def shared_page(token: str):
+    share = query("SELECT guild_id FROM dashboard_shares WHERE token=?", (token,))
+    if not share:
+        abort(404)
+    guild_id = share[0]["guild_id"]
+    leaderboards = [(mode, label, query("SELECT user_id, rating, wins, losses, games FROM ratings WHERE guild_id=? AND mode=? ORDER BY rating DESC LIMIT 10", (guild_id, mode))) for mode, label in MODES.items()]
+    return render_template_string(PAGE + """<p>Public read-only view</p>{% for mode, label, rows in leaderboards %}<div class=card><h2>{{ label }}</h2>{% if rows %}<table><tr><th>#</th><th>Player ID</th><th>Elo</th><th>Record</th><th>Games</th></tr>{% for row in rows %}<tr><td>{{ loop.index }}</td><td>{{ row.user_id }}</td><td>{{ row.rating }}</td><td>{{ row.wins }}-{{ row.losses }}</td><td>{{ row.games }}</td></tr>{% endfor %}</table>{% else %}<p>No matches recorded.</p>{% endif %}</div>{% endfor %}""", leaderboards=leaderboards, modes=MODES)
+
+
 @app.route("/player/<int:user_id>")
 def player_page(user_id: int):
     rows = query("SELECT mode, rating, wins, losses, games FROM ratings WHERE user_id=? ORDER BY rating DESC", (user_id,))

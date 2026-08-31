@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import random
+import secrets
 import shutil
 import sqlite3
 from io import BytesIO
@@ -303,6 +304,26 @@ class EloDatabase:
                 threshold INTEGER NOT NULL,
                 created_by INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS map_rotation (
+                guild_id INTEGER PRIMARY KEY,
+                maps TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS webhook_settings (
+                guild_id INTEGER PRIMARY KEY,
+                webhook_url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS dashboard_shares (
+                guild_id INTEGER NOT NULL,
+                token TEXT PRIMARY KEY,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS nickname_settings (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -470,6 +491,39 @@ class EloDatabase:
         source_connection.backup(self.connection)
         source_connection.close()
         self.connection.commit()
+
+    def set_rotation(self, guild_id: int, maps: list[str]):
+        self.connection.execute("INSERT INTO map_rotation (guild_id, maps, position) VALUES (?, ?, 0) ON CONFLICT(guild_id) DO UPDATE SET maps=excluded.maps, position=0", (guild_id, json.dumps(maps)))
+        self.connection.commit()
+
+    def next_map(self, guild_id: int):
+        row = self.connection.execute("SELECT maps, position FROM map_rotation WHERE guild_id=?", (guild_id,)).fetchone()
+        if not row:
+            return None
+        maps = json.loads(row["maps"])
+        if not maps:
+            return None
+        position = row["position"] % len(maps)
+        selected = maps[position]
+        self.connection.execute("UPDATE map_rotation SET position=? WHERE guild_id=?", ((position + 1) % len(maps), guild_id))
+        self.connection.commit()
+        return selected
+
+    def create_share(self, guild_id: int, user_id: int):
+        token = secrets.token_urlsafe(18)
+        self.connection.execute("INSERT INTO dashboard_shares (guild_id, token, created_by, created_at) VALUES (?, ?, ?, ?)", (guild_id, token, user_id, datetime.now(timezone.utc).isoformat()))
+        self.connection.commit()
+        return token
+
+    def share(self, token: str):
+        return self.connection.execute("SELECT * FROM dashboard_shares WHERE token=?", (token,)).fetchone()
+
+    def set_webhook(self, guild_id: int, url: str):
+        self.connection.execute("INSERT INTO webhook_settings (guild_id, webhook_url) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET webhook_url=excluded.webhook_url, enabled=1", (guild_id, url))
+        self.connection.commit()
+
+    def webhook(self, guild_id: int):
+        return self.connection.execute("SELECT * FROM webhook_settings WHERE guild_id=? AND enabled=1", (guild_id,)).fetchone()
 
     def create_challenge(self, guild_id: int, mode: str, challenger_id: int, opponent_id: int):
         cursor = self.connection.execute("INSERT INTO challenges (guild_id, mode, challenger_id, opponent_id) VALUES (?, ?, ?, ?)", (guild_id, mode, challenger_id, opponent_id))
@@ -2248,6 +2302,196 @@ async def temporary_channel_cleanup():
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
         bot.database.untrack_channel(row["channel_id"])
+
+
+@bot.tree.command(name="player_compare", description="Compare two player profiles")
+@app_commands.describe(mode="Game mode", first="First player", second="Second player")
+@app_commands.choices(mode=mode_choices)
+async def player_compare(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.Member, second: discord.Member):
+    rows = [bot.database.connection.execute("SELECT rating, wins, losses, games FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone() for member in (first, second)]
+    lines = []
+    for member, row in zip((first, second), rows):
+        rating = row["rating"] if row else bot.database.get_rating(interaction.guild_id, member.id, mode.value)
+        record = f"{row['wins']}-{row['losses']}" if row else "0-0"
+        lines.append(f"{member.mention}: **{rating} Elo** · {record}")
+    await interaction.response.send_message(f"**Player comparison — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="recent_form", description="Show a player's last five results")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def recent_form(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.player_history(interaction.guild_id, member.id, 5)
+    rows = [row for row in rows if row["mode"] == mode.value]
+    if not rows:
+        await interaction.response.send_message("No recent results for that mode.")
+        return
+    await interaction.response.send_message(f"**{member.display_name} recent form — {mode_label(mode.value)}**\n" + " · ".join(f"#{row['id']} {row['rating_delta']:+d}" for row in rows))
+
+
+@bot.tree.command(name="consistency", description="Show a player's performance consistency")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def consistency(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.rating_history(interaction.guild_id, member.id, mode.value, 20)
+    if not rows:
+        await interaction.response.send_message("No matches for that player and mode.")
+        return
+    values = [row["rating_delta"] for row in rows]
+    average = sum(values) / len(values)
+    variance = sum((value - average) ** 2 for value in values) / len(values)
+    await interaction.response.send_message(f"**{member.display_name} consistency — {mode_label(mode.value)}**\nAverage Elo change: **{average:+.1f}** · Volatility: **{variance ** 0.5:.1f}** points")
+
+
+@bot.tree.command(name="personal_bests", description="Show a player's best recorded stat lines")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def personal_bests(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    row = bot.database.connection.execute("SELECT MAX(kills) AS kills, MAX(damage) AS damage, MAX(score) AS score, MAX(assists) AS assists, MAX(captures) AS captures, MAX(breaks) AS breaks FROM match_player_stats WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone()
+    if not row or row["kills"] is None:
+        await interaction.response.send_message("No stats for that player and mode.")
+        return
+    values = " · ".join(f"{name.title()}: **{row[name]}**" for name in stat_names(mode.value))
+    await interaction.response.send_message(f"**{member.display_name} personal bests — {mode_label(mode.value)}**\n{values}")
+
+
+@bot.tree.command(name="close_games", description="Show the closest recorded matches")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def close_games(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    history = bot.database.match_history(interaction.guild_id, mode.value, 10)
+    if not history:
+        await interaction.response.send_message("No matches recorded for that mode.")
+        return
+    lines = [f"Match #{row['id']} — Team {row['winner']} won · {row['map_name']}" for row in history]
+    await interaction.response.send_message(f"**Closest recent games — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="comebacks", description="Show upset and comeback wins")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def comebacks(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.connection.execute("SELECT id, winner, team_one, team_two FROM matches WHERE guild_id=? AND mode=? ORDER BY id DESC LIMIT 50", (interaction.guild_id, mode.value)).fetchall()
+    lines = []
+    for row in rows:
+        first = [bot.database.get_rating(interaction.guild_id, int(x), mode.value) for x in row["team_one"].split(",")]
+        second = [bot.database.get_rating(interaction.guild_id, int(x), mode.value) for x in row["team_two"].split(",")]
+        if (row["winner"] == 1 and sum(first) < sum(second)) or (row["winner"] == 2 and sum(second) < sum(first)):
+            lines.append(f"Match #{row['id']} — Team {row['winner']} upset the higher-rated side")
+    await interaction.response.send_message(f"**Comeback/upset wins — {mode_label(mode.value)}**\n" + ("\n".join(lines[:10]) or "No rating upsets recorded yet."))
+
+
+@bot.tree.command(name="rotation_set", description="Configure the server's map rotation")
+@app_commands.describe(maps="Comma-separated map names")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def rotation_set(interaction: discord.Interaction, maps: str):
+    map_list = [item.strip() for item in maps.split(",") if item.strip()]
+    if not map_list:
+        await interaction.response.send_message("Enter at least one map.", ephemeral=True)
+        return
+    bot.database.set_rotation(interaction.guild_id, map_list)
+    await interaction.response.send_message(f"Map rotation set: {', '.join(map_list)}")
+
+
+@bot.tree.command(name="next_map", description="Get and advance the next map in rotation")
+async def next_map(interaction: discord.Interaction):
+    selected = bot.database.next_map(interaction.guild_id)
+    await interaction.response.send_message(f"Next map: **{selected}**" if selected else "No map rotation configured. Use `/rotation_set` first.")
+
+
+@bot.tree.command(name="nickname_sync", description="Sync player nicknames with their Elo")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(manage_nicknames=True)
+async def nickname_sync(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this inside a server.", ephemeral=True)
+        return
+    rows = bot.database.leaderboard(interaction.guild_id, mode.value, "rating", 100)
+    updated = 0
+    for row in rows:
+        member = interaction.guild.get_member(row["user_id"])
+        if member and not member.bot:
+            try:
+                await member.edit(nick=f"{member.display_name[:24]} [{row['rating']}]", reason="Sync Gears Elo nickname")
+                updated += 1
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+    await interaction.response.send_message(f"Updated {updated} nickname(s) for {mode_label(mode.value)}.")
+
+
+@bot.tree.command(name="roles_cleanup", description="Remove outdated Elo tier roles")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(manage_roles=True)
+async def roles_cleanup(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this inside a server.", ephemeral=True)
+        return
+    prefix = f"Gears Elo • {mode_label(mode.value)} • "
+    removed = 0
+    for member in interaction.guild.members:
+        roles = [role for role in member.roles if role.name.startswith(prefix)]
+        if len(roles) > 1:
+            try:
+                await member.remove_roles(*roles[:-1], reason="Clean up duplicate Elo roles")
+                removed += len(roles) - 1
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+    await interaction.response.send_message(f"Removed {removed} outdated role assignment(s).")
+
+
+@bot.tree.command(name="health", description="Show bot and database health")
+async def health(interaction: discord.Interaction):
+    table_count = bot.database.connection.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+    await interaction.response.send_message(f"✅ Bot online\nDatabase: healthy\nRecorded matches: **{table_count}**\nDashboard: `http://<this-PC-IP>:{os.getenv('DASHBOARD_PORT', '5050')}`")
+
+
+@bot.tree.command(name="integrity", description="Check database integrity")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def integrity(interaction: discord.Interaction):
+    result = bot.database.connection.execute("PRAGMA integrity_check").fetchone()[0]
+    orphaned = bot.database.connection.execute("SELECT COUNT(*) FROM match_player_stats s LEFT JOIN matches m ON m.id=s.match_id WHERE m.id IS NULL").fetchone()[0]
+    await interaction.response.send_message(f"Database integrity: **{result}**\nOrphaned stat rows: **{orphaned}**")
+
+
+@bot.tree.command(name="webhook_set", description="Configure a webhook for future announcements")
+@app_commands.describe(url="Discord webhook URL")
+@app_commands.checks.has_permissions(manage_webhooks=True)
+async def webhook_set(interaction: discord.Interaction, url: str):
+    if not url.startswith("https://discord.com/api/webhooks/"):
+        await interaction.response.send_message("That does not look like a Discord webhook URL.", ephemeral=True)
+        return
+    bot.database.set_webhook(interaction.guild_id, url)
+    await interaction.response.send_message("Webhook saved for future bot notifications.", ephemeral=True)
+
+
+@bot.tree.command(name="dashboard_share", description="Create a public read-only dashboard link")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def dashboard_share(interaction: discord.Interaction):
+    token = bot.database.create_share(interaction.guild_id, interaction.user.id)
+    port = os.getenv("DASHBOARD_PORT", "5050")
+    await interaction.response.send_message(f"Read-only dashboard link: `http://<this-PC-IP>:{port}/share/{token}`", ephemeral=True)
+
+
+@bot.tree.command(name="help_menu", description="Show commands grouped by use")
+async def help_menu(interaction: discord.Interaction):
+    embed = discord.Embed(title="Gears 5 Elo commands", colour=discord.Colour.red())
+    embed.add_field(name="Matches", value="`/match` `/match_confirm` `/match_vote` `/rematch` `/forfeit` `/remake`", inline=False)
+    embed.add_field(name="Teams", value="`/balance` `/random_teams` `/draft_start` `/queue_join` `/teamleaderboard`", inline=False)
+    embed.add_field(name="Stats", value="`/leaderboard` `/stats` `/profile` `/trend` `/predict` `/awards` `/history`", inline=False)
+    embed.add_field(name="Admin", value="`/setelo` `/season_reset` `/backup_now` `/integrity` `/permission_set`", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="lb", description="Alias for the player leaderboard")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def lb(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await leaderboard(interaction, mode)
 
 
 @tasks.loop(minutes=1)
