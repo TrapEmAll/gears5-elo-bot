@@ -1060,9 +1060,12 @@ class GearsEloBot(commands.Bot):
             # stale guild-scoped commands when a command is renamed or moved
             # beneath a group.
             self.tree.clear_commands(guild=guild)
-            self.tree.copy_global_to(guild=guild)
+            # Sync the empty guild tree first so Discord removes the old
+            # command IDs before the replacement grouped commands are added.
             await self.tree.sync(guild=guild)
-            print(f"Slash commands synced to server {GUILD_ID}.")
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            print(f"Slash commands synced to server {GUILD_ID} ({len(synced)} top-level commands).")
         else:
             await self.tree.sync()
 
