@@ -391,7 +391,10 @@ class PlayerStatsModal(discord.ui.Modal):
             await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
             return
         change_text = " · ".join(f"<@{change.user_id}> {change.new_rating} ({change.delta:+d})" for change in changes)
-        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n{change_text}\nStats saved for {len(self.stats)} players.")
+        mvp_id, mvp_stats = max(self.stats.items(), key=lambda item: (item[1].get("score", 0), item[1].get("kills", 0), item[1].get("damage", 0)))
+        team_one_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_one)
+        team_two_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_two)
+        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n🏅 MVP: <@{mvp_id}> ({mvp_stats.get('score', 0)} score, {mvp_stats.get('kills', 0)} kills)\n📊 Team scores: **{team_one_score}** — **{team_two_score}**\n{change_text}\nStats saved for {len(self.stats)} players.")
 
 
 @bot.tree.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
