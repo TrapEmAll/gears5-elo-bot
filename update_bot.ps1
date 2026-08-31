@@ -2,16 +2,36 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
-Write-Host "Stopping the running Gears 5 Elo Bot..."
-Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -like "*$projectRoot*bot.py*" } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
 if (Test-Path ".git") {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "Git was not found. Install Git for Windows or use a ZIP download of the bot." -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+
+    $localChanges = @(git status --porcelain)
+    if ($localChanges.Count -gt 0) {
+        Write-Host "Update stopped because this folder has local tracked changes:" -ForegroundColor Red
+        $localChanges | ForEach-Object { Write-Host "  $_" }
+        Write-Host "Commit or move those changes, then run the updater again." -ForegroundColor Yellow
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+
     Write-Host "Downloading the latest version from GitHub..."
-    git pull --ff-only origin main
+    git fetch --prune origin main
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Update stopped. Git could not fast-forward this folder. Check for local changes." -ForegroundColor Red
+        Write-Host "Update stopped. Git could not download the latest version." -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+
+    # The repository has been updated through GitHub's web UI before, so the
+    # local history may diverge. With no local changes, reset tracked code to
+    # exactly origin/main while leaving ignored .env, .venv, and database files.
+    git reset --hard origin/main
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Update stopped. Git could not apply the downloaded version." -ForegroundColor Red
         Read-Host "Press Enter to close"
         exit 1
     }
@@ -38,16 +58,32 @@ if (Test-Path ".git") {
     }
 }
 
+Write-Host "Stopping the running Gears 5 Elo Bot..."
+Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+    Where-Object { $_.CommandLine -like "*$projectRoot*bot.py*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 if (-not (Test-Path ".venv\Scripts\python.exe")) {
     Write-Host "Bot environment not found; running first-time setup..."
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot "setup_windows.ps1")
 } else {
     Write-Host "Updating dependencies..."
     & (Join-Path $projectRoot ".venv\Scripts\python.exe") -m pip install -r requirements.txt --disable-pip-version-check
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Dependency update failed. The bot was not restarted." -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
 }
 
 if (-not (Test-Path ".env")) {
     Write-Host "No .env file found. Run setup_windows.ps1 and add your Discord token first." -ForegroundColor Red
+    Read-Host "Press Enter to close"
+    exit 1
+}
+
+if (-not (Test-Path "start_bot.bat")) {
+    Write-Host "start_bot.bat is missing. The update cannot start the bot." -ForegroundColor Red
     Read-Host "Press Enter to close"
     exit 1
 }

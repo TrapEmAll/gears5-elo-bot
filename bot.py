@@ -1216,7 +1216,13 @@ class PlayerStatsModal(discord.ui.Modal):
 
         next_index = self.index + 1
         if next_index < len(self.player_ids):
-            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index, self.map_name, self.labels))
+            next_player = self.labels.get(self.player_ids[next_index], f"Player {next_index + 1}")
+            await interaction.response.send_message(
+                f"✅ Saved stats for **{self.labels.get(player_id, f'Player {self.index + 1}')}**. "
+                f"Click below to enter stats for **{next_player}**.",
+                ephemeral=True,
+                view=NextPlayerStatsView(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index, self.map_name, self.labels),
+            )
             return
 
         try:
@@ -1225,6 +1231,28 @@ class PlayerStatsModal(discord.ui.Modal):
             await interaction.response.send_message(f"Could not save match for confirmation: {error}", ephemeral=True)
             return
         await interaction.response.send_message(f"📝 Match **#{pending_id}** is ready for confirmation. One player from each team must use `/match_confirm match_id:{pending_id}`. Use `/match_cancel match_id:{pending_id}` to discard it.")
+
+
+class NextPlayerStatsView(discord.ui.View):
+    """Button bridge between stat modals; Discord forbids modal-to-modal responses."""
+
+    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str, labels: dict[int, str]):
+        super().__init__(timeout=600)
+        self.mode = mode
+        self.winner = winner
+        self.team_one = team_one
+        self.team_two = team_two
+        self.player_ids = player_ids
+        self.stats = stats
+        self.index = index
+        self.map_name = map_name
+        self.labels = labels
+
+    @discord.ui.button(label="Enter next player's stats", style=discord.ButtonStyle.primary)
+    async def open_next_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, self.index, self.map_name, self.labels)
+        )
 
 
 @server_group.command(name="modes", description="Show the Gears 5 modes tracked by this bot")

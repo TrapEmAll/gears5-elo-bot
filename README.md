@@ -59,7 +59,7 @@ Example for a 2v2 Gnashers match:
 
 Administrators can use `/setelo` to configure a rating floor and the number of provisional games in addition to the starting rating and K-factor. The dashboard refreshes automatically and supports an all-mode filter plus JSON leaderboard endpoints at `/api/leaderboard/<mode>`.
 
-After submitting the match, the bot opens a small form for each player, labeled with that player's Discord display name and username. Enter only that player's stats in the form currently shown; you do not need to look up Discord user IDs. Every mode requires `damage`; 1v1 Gnashers requires `kills`, `deaths`, `damage`, and `score`; 2v2 Gnashers also includes `assists`:
+After submitting the match, the bot opens a small form for each player, labeled with that player's Discord display name and username. Enter only that player's stats in the form currently shown, then click **Enter next player's stats** to continue; you do not need to look up Discord user IDs. Every mode requires `damage`; 1v1 Gnashers requires `kills`, `deaths`, `damage`, and `score`; 2v2 Gnashers also includes `assists`:
 
 ```text
 @Alice kills=15 deaths=8 damage=500 score=250
