@@ -279,6 +279,12 @@ class EloDatabase:
             (guild_id, mode),
         ).fetchall()
 
+    def match_history(self, guild_id: int, mode: str | None = None, limit: int = 10):
+        limit = max(1, min(limit, 20))
+        if mode:
+            return self.connection.execute("SELECT m.*, s.name AS season_name FROM matches m LEFT JOIN seasons s ON s.id=m.season_id WHERE m.guild_id=? AND m.mode=? ORDER BY m.id DESC LIMIT ?", (guild_id, mode, limit)).fetchall()
+        return self.connection.execute("SELECT m.*, s.name AS season_name FROM matches m LEFT JOIN seasons s ON s.id=m.season_id WHERE m.guild_id=? ORDER BY m.id DESC LIMIT ?", (guild_id, limit)).fetchall()
+
     def player_stats(self, guild_id: int, user_id: int):
         return self.connection.execute(
             "SELECT mode, rating, wins, losses, games FROM ratings WHERE guild_id=? AND user_id=? ORDER BY rating DESC",
@@ -542,6 +548,23 @@ async def mapstats(interaction: discord.Interaction, mode: app_commands.Choice[s
         return
     lines = [f"**{row['map_name']}** — {row['games']} games · Team 1: {row['team_one_wins']} wins · Team 2: {row['team_two_wins']} wins" for row in rows]
     await interaction.response.send_message(f"**{mode_label(mode.value)} map stats**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="history", description="Show recent recorded matches")
+@app_commands.describe(mode="Optional game mode", limit="Number of matches, from 1 to 20")
+@app_commands.choices(mode=mode_choices)
+async def history(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 10):
+    rows = bot.database.match_history(interaction.guild_id, mode.value if mode else None, limit)
+    if not rows:
+        await interaction.response.send_message("No recorded matches found.")
+        return
+    lines = []
+    for row in rows:
+        first = " + ".join(f"<@{user_id}>" for user_id in row["team_one"].split(","))
+        second = " + ".join(f"<@{user_id}>" for user_id in row["team_two"].split(","))
+        season_text = f" · {row['season_name']}" if row["season_name"] else ""
+        lines.append(f"**#{row['id']} {mode_label(row['mode'])}** · {row['map_name']} · Team {row['winner']} won{season_text}\n{first} vs {second}")
+    await interaction.response.send_message("**Recent match history**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="undo", description="Undo the latest match in this server")
