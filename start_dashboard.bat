@@ -6,6 +6,6 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-echo Starting local dashboard at http://127.0.0.1:5000
+echo Starting local dashboard at http://127.0.0.1:5050
 ".venv\Scripts\python.exe" dashboard.py
 pause
