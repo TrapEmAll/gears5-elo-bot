@@ -1055,6 +1055,11 @@ class GearsEloBot(commands.Bot):
     async def setup_hook(self):
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
+            # Remove commands registered by older versions before copying the
+            # current grouped tree. Discord does not automatically delete
+            # stale guild-scoped commands when a command is renamed or moved
+            # beneath a group.
+            self.tree.clear_commands(guild=guild)
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             print(f"Slash commands synced to server {GUILD_ID}.")
