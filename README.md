@@ -40,6 +40,13 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
 - `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
+- `/match_vote` — approve or dispute a pending result.
+- `/note_add`, `/notes`, `/note_delete` — admin player notes.
+- `/preset_save`, `/presets`, `/preset_delete` — save and reuse frequent team rosters.
+- `/myhistory` — view your recent matches and personal stats.
+- `/mapplayer` — view a player's performance by map.
+- `/announce` — admin leaderboard announcement.
+- `/match_edit` — admin correction of a player's stats; ratings are intentionally unchanged.
 - `/rematch` — reuse teams from a previous match.
 - `/series_start`, `/series_update`, `/series_status` — track BO3 and BO5 series.
 - `/availability`, `/available` — mark and view player availability.

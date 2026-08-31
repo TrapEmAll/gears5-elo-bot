@@ -210,6 +210,30 @@ class EloDatabase:
                 details TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS match_votes (
+                match_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                vote TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (match_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS player_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                note TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS team_presets (
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                players TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, name)
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -313,6 +337,48 @@ class EloDatabase:
     def audit(self, guild_id: int, actor_id: int, action: str, details: str):
         self.connection.execute("INSERT INTO audit_log (guild_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (guild_id, actor_id, action, details))
         self.connection.commit()
+
+    def vote(self, guild_id: int, match_id: int, user_id: int, vote: str):
+        self.connection.execute("INSERT INTO match_votes (match_id, guild_id, user_id, vote) VALUES (?, ?, ?, ?) ON CONFLICT(match_id, user_id) DO UPDATE SET vote=excluded.vote", (match_id, guild_id, user_id, vote))
+        self.connection.commit()
+
+    def votes(self, guild_id: int, match_id: int):
+        return self.connection.execute("SELECT vote, COUNT(*) AS count FROM match_votes WHERE guild_id=? AND match_id=? GROUP BY vote", (guild_id, match_id)).fetchall()
+
+    def add_note(self, guild_id: int, user_id: int, author_id: int, note: str):
+        cursor = self.connection.execute("INSERT INTO player_notes (guild_id, user_id, author_id, note) VALUES (?, ?, ?, ?)", (guild_id, user_id, author_id, note.strip()))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def notes(self, guild_id: int, user_id: int):
+        return self.connection.execute("SELECT * FROM player_notes WHERE guild_id=? AND user_id=? ORDER BY id DESC", (guild_id, user_id)).fetchall()
+
+    def delete_note(self, guild_id: int, note_id: int):
+        result = self.connection.execute("DELETE FROM player_notes WHERE guild_id=? AND id=?", (guild_id, note_id))
+        self.connection.commit()
+        return result.rowcount
+
+    def save_preset(self, guild_id: int, name: str, mode: str, players: list[int], created_by: int):
+        self.connection.execute("INSERT INTO team_presets (guild_id, name, mode, players, created_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT(guild_id, name) DO UPDATE SET mode=excluded.mode, players=excluded.players, created_by=excluded.created_by", (guild_id, name.strip(), mode, ",".join(map(str, players)), created_by))
+        self.connection.commit()
+
+    def preset(self, guild_id: int, name: str):
+        return self.connection.execute("SELECT * FROM team_presets WHERE guild_id=? AND name=?", (guild_id, name.strip())).fetchone()
+
+    def presets(self, guild_id: int):
+        return self.connection.execute("SELECT * FROM team_presets WHERE guild_id=? ORDER BY name", (guild_id,)).fetchall()
+
+    def delete_preset(self, guild_id: int, name: str):
+        result = self.connection.execute("DELETE FROM team_presets WHERE guild_id=? AND name=?", (guild_id, name.strip()))
+        self.connection.commit()
+        return result.rowcount
+
+    def player_history(self, guild_id: int, user_id: int, limit: int = 10):
+        limit = max(1, min(limit, 20))
+        return self.connection.execute("SELECT m.*, s.kills, s.deaths, s.assists, s.damage, s.score, s.rating_delta FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE s.guild_id=? AND s.user_id=? ORDER BY m.id DESC LIMIT ?", (guild_id, user_id, limit)).fetchall()
+
+    def map_player_stats(self, guild_id: int, mode: str, user_id: int):
+        return self.connection.execute("SELECT m.map_name, COUNT(*) AS games, SUM(s.kills) AS kills, SUM(s.deaths) AS deaths, SUM(s.damage) AS damage, SUM(s.score) AS score FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE m.guild_id=? AND m.mode=? AND s.user_id=? GROUP BY m.map_name ORDER BY games DESC, m.map_name", (guild_id, mode, user_id)).fetchall()
 
     def set_availability(self, guild_id: int, user_id: int, status: str):
         self.connection.execute("INSERT INTO availability (guild_id, user_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at", (guild_id, user_id, status, datetime.now(timezone.utc).isoformat()))
@@ -1007,6 +1073,87 @@ async def rivalry(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"**{first.display_name} vs {second.display_name} — {mode_label(mode.value)}**\nGames: **{row['games']}**\n{first.mention}: **{row['first_wins']} wins**\n{second.mention}: **{row['second_wins']} wins**")
 
 
+@bot.tree.command(name="match_vote", description="Approve or dispute a pending match result")
+@app_commands.describe(match_id="Pending match number", decision="Your decision")
+@app_commands.choices(decision=[app_commands.Choice(name="Approve", value="approve"), app_commands.Choice(name="Dispute", value="dispute")])
+async def match_vote(interaction: discord.Interaction, match_id: int, decision: app_commands.Choice[str]):
+    row = bot.database.pending_match(interaction.guild_id, match_id)
+    if not row:
+        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        return
+    players = {int(value) for value in row["team_one"].split(",") + row["team_two"].split(",")}
+    if interaction.user.id not in players:
+        await interaction.response.send_message("Only players in the match can vote.", ephemeral=True)
+        return
+    bot.database.vote(interaction.guild_id, match_id, interaction.user.id, decision.value)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "match_vote", f"match #{match_id}: {decision.value}")
+    if decision.value == "dispute":
+        await interaction.response.send_message(f"⚠️ Match **#{match_id}** disputed. The submitter can cancel it and re-enter corrected stats.")
+        return
+    updated = bot.database.confirm_pending_match(interaction.guild_id, match_id, interaction.user.id)
+    confirmed = json.loads(updated["confirmed_by"])
+    await interaction.response.send_message(f"Approval recorded for match **#{match_id}** ({len(confirmed)} confirmation(s)). Use `/match_confirm match_id:{match_id}` when both sides have approved.")
+
+
+@bot.tree.command(name="note_add", description="Add an admin note to a player")
+@app_commands.describe(player="Player", note="Note text")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def note_add(interaction: discord.Interaction, player: discord.Member, note: str):
+    note_id = bot.database.add_note(interaction.guild_id, player.id, interaction.user.id, note)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "note_added", f"note #{note_id} for {player.id}")
+    await interaction.response.send_message(f"Added private admin note **#{note_id}** for {player.display_name}.", ephemeral=True)
+
+
+@bot.tree.command(name="notes", description="View admin notes for a player")
+@app_commands.describe(player="Player")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def notes(interaction: discord.Interaction, player: discord.Member):
+    rows = bot.database.notes(interaction.guild_id, player.id)
+    if not rows:
+        await interaction.response.send_message("No notes found.", ephemeral=True)
+        return
+    await interaction.response.send_message("**Admin notes**\n" + "\n".join(f"#{row['id']} ({row['created_at'][:10]}): {row['note']}" for row in rows), ephemeral=True)
+
+
+@bot.tree.command(name="note_delete", description="Delete an admin note")
+@app_commands.describe(note_id="Note number")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def note_delete(interaction: discord.Interaction, note_id: int):
+    if not bot.database.delete_note(interaction.guild_id, note_id):
+        await interaction.response.send_message("That note was not found.", ephemeral=True)
+        return
+    bot.database.audit(interaction.guild_id, interaction.user.id, "note_deleted", f"note #{note_id}")
+    await interaction.response.send_message(f"Deleted note **#{note_id}**.", ephemeral=True)
+
+
+@bot.tree.command(name="preset_save", description="Save a frequent team roster")
+@app_commands.describe(name="Preset name", mode="Game mode", players="Comma-separated players")
+@app_commands.choices(mode=mode_choices)
+async def preset_save(interaction: discord.Interaction, name: str, mode: app_commands.Choice[str], players: str):
+    try:
+        roster = parse_team(players, team_size(mode.value))
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    bot.database.save_preset(interaction.guild_id, name, mode.value, roster, interaction.user.id)
+    await interaction.response.send_message(f"Saved team preset **{name}** for {mode_label(mode.value)}.")
+
+
+@bot.tree.command(name="presets", description="List saved team presets")
+async def presets(interaction: discord.Interaction):
+    rows = bot.database.presets(interaction.guild_id)
+    await interaction.response.send_message("**Team presets**\n" + ("\n".join(f"**{row['name']}** — {mode_label(row['mode'])}: " + " + ".join(f"<@{x}>" for x in row['players'].split(",")) for row in rows) if rows else "No presets saved."))
+
+
+@bot.tree.command(name="preset_delete", description="Delete a saved team preset")
+@app_commands.describe(name="Preset name")
+async def preset_delete(interaction: discord.Interaction, name: str):
+    if not bot.database.delete_preset(interaction.guild_id, name):
+        await interaction.response.send_message("That preset was not found.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"Deleted preset **{name}**.")
+
+
 @bot.tree.command(name="series_start", description="Start a best-of-3 or best-of-5 series")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", format="Series format")
 @app_commands.choices(mode=mode_choices, format=[app_commands.Choice(name="Best of 3", value="2"), app_commands.Choice(name="Best of 5", value="3")])
@@ -1256,6 +1403,67 @@ async def stats(interaction: discord.Interaction, mode: app_commands.Choice[str]
     totals = " · ".join(f"{name.title()}: **{row[name]}**" for name in names)
     averages = " · ".join(f"{name.title()}: **{row[name] / matches_played:.1f}**" for name in names)
     await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)} stats**\nMatches: **{matches_played}**\nTotals — {totals}\nAverages — {averages}")
+
+
+@bot.tree.command(name="myhistory", description="Show your recent matches with full personal stats")
+@app_commands.describe(limit="Number of matches, from 1 to 20")
+async def myhistory(interaction: discord.Interaction, limit: int = 10):
+    rows = bot.database.player_history(interaction.guild_id, interaction.user.id, limit)
+    if not rows:
+        await interaction.response.send_message("You have no recorded matches yet.")
+        return
+    lines = [f"**#{row['id']} {mode_label(row['mode'])}** — Team {row['winner']} won · K/D {row['kills']}/{row['deaths']} · Damage {row['damage']} · Score {row['score']} · Elo {row['rating_delta']:+d}" for row in rows]
+    await interaction.response.send_message("**Your recent match history**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="mapplayer", description="Show a player's performance by map")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def mapplayer(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.map_player_stats(interaction.guild_id, mode.value, member.id)
+    if not rows:
+        await interaction.response.send_message(f"{member.mention} has no map data for {mode_label(mode.value)}.")
+        return
+    lines = [f"**{row['map_name']}** — {row['games']} games · K/D {row['kills']}/{row['deaths']} · Damage {row['damage']} · Score {row['score']}" for row in rows]
+    await interaction.response.send_message(f"**{member.display_name} map analytics — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="announce", description="Post a leaderboard announcement")
+@app_commands.describe(mode="Game mode", metric="Leaderboard metric")
+@app_commands.choices(mode=mode_choices, metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Kills", value="kills")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def announce(interaction: discord.Interaction, mode: app_commands.Choice[str], metric: app_commands.Choice[str] | None = None):
+    metric_value = metric.value if metric else "rating"
+    rows = bot.database.leaderboard(interaction.guild_id, mode.value, metric_value, 5)
+    if not rows:
+        await interaction.response.send_message("No leaderboard data yet.", ephemeral=True)
+        return
+    names = {"rating": "Elo", "wins": "wins", "damage": "damage", "kills": "kills"}
+    lines = [f"{index}. <@{row['user_id']}> — {row[metric_value] if metric_value != 'rating' else row['rating']} {names[metric_value]}" for index, row in enumerate(rows, 1)]
+    await interaction.response.send_message(f"📣 **{mode_label(mode.value)} leaderboard announcement**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="match_edit", description="Correct a player's recorded stats in a match")
+@app_commands.describe(match_id="Recorded match number", player="Player whose stats need correction", stats_line="Complete stat line, e.g. kills=10 deaths=4 damage=200 score=100")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def match_edit(interaction: discord.Interaction, match_id: int, player: discord.Member, stats_line: str):
+    match_row = bot.database.connection.execute("SELECT mode FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
+    if not match_row:
+        await interaction.response.send_message("That match was not found.", ephemeral=True)
+        return
+    try:
+        values = parse_player_stats(stats_line, match_row["mode"])
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    result = bot.database.connection.execute("UPDATE match_player_stats SET captures=?, breaks=?, kills=?, deaths=?, assists=?, damage=?, score=? WHERE guild_id=? AND match_id=? AND user_id=?", (values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), interaction.guild_id, match_id, player.id))
+    bot.database.connection.commit()
+    if not result.rowcount:
+        await interaction.response.send_message("That player was not part of the match.", ephemeral=True)
+        return
+    bot.database.audit(interaction.guild_id, interaction.user.id, "match_edited", f"match #{match_id}; player={player.id}")
+    await interaction.response.send_message(f"Corrected {player.mention}'s stats in match **#{match_id}**. Elo was not changed; use `/undo` and re-enter the match if the result or ratings also need correction.", ephemeral=True)
 
 
 @bot.tree.command(name="teamstats", description="Show the head-to-head record for two exact teams")
