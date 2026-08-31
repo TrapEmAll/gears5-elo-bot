@@ -73,6 +73,11 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/trend` — upload an Elo trend chart with damage, kills, or score over time.
 - `/profile` — show a complete player profile with record and performance stats.
 - `/achievements` — show earned player badges.
+- `/achievement_create` — admin-only: create server-specific achievement goals.
+- `/elo_history` — show match-by-match Elo changes.
+- `/confidence` — show rating confidence based on games played.
+- `/predict` — estimate team win probabilities from average Elo.
+- `/awards` — show kills, damage, assists, and score leaders.
 - Match completion — automatically posts an MVP, team score totals, and Elo changes.
 - `/streaks` — show current and best win streak leaders for a mode.
 - `/mapstats` — show match counts and team wins by map.

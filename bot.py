@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_size
+from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, expected_score, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_size
 
 load_dotenv()
 
@@ -295,6 +295,14 @@ class EloDatabase:
                 channel_id INTEGER PRIMARY KEY,
                 delete_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS custom_achievements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                threshold INTEGER NOT NULL,
+                created_by INTEGER NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -551,6 +559,23 @@ class EloDatabase:
 
     def map_player_stats(self, guild_id: int, mode: str, user_id: int):
         return self.connection.execute("SELECT m.map_name, COUNT(*) AS games, SUM(s.kills) AS kills, SUM(s.deaths) AS deaths, SUM(s.damage) AS damage, SUM(s.score) AS score FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE m.guild_id=? AND m.mode=? AND s.user_id=? GROUP BY m.map_name ORDER BY games DESC, m.map_name", (guild_id, mode, user_id)).fetchall()
+
+    def create_achievement(self, guild_id: int, name: str, metric: str, threshold: int, created_by: int):
+        cursor = self.connection.execute("INSERT INTO custom_achievements (guild_id, name, metric, threshold, created_by) VALUES (?, ?, ?, ?, ?)", (guild_id, name.strip(), metric, threshold, created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def custom_achievements(self, guild_id: int):
+        return self.connection.execute("SELECT * FROM custom_achievements WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+
+    def custom_progress(self, guild_id: int, user_id: int, metric: str):
+        allowed = {"games": "COUNT(*)", "kills": "SUM(kills)", "damage": "SUM(damage)", "score": "SUM(score)", "assists": "SUM(assists)"}
+        expression = allowed.get(metric, allowed["games"])
+        row = self.connection.execute(f"SELECT {expression} AS value FROM match_player_stats WHERE guild_id=? AND user_id=?", (guild_id, user_id)).fetchone()
+        return row["value"] or 0
+
+    def elo_history(self, guild_id: int, user_id: int, mode: str, limit: int = 20):
+        return self.rating_history(guild_id, user_id, mode, limit)
 
     def set_availability(self, guild_id: int, user_id: int, status: str):
         self.connection.execute("INSERT INTO availability (guild_id, user_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at", (guild_id, user_id, status, datetime.now(timezone.utc).isoformat()))
@@ -1913,10 +1938,80 @@ async def achievements(interaction: discord.Interaction, player: discord.Member 
             badges.append(f"💥 Damage Dealer — {mode}")
         if row["mode"].startswith("control_") and row["captures"] >= 25:
             badges.append(f"🚩 Objective Player — {mode}")
+    for achievement in bot.database.custom_achievements(interaction.guild_id):
+        progress = bot.database.custom_progress(interaction.guild_id, member.id, achievement["metric"])
+        if progress >= achievement["threshold"]:
+            badges.append(f"🏆 {achievement['name']}")
     if not badges:
         await interaction.response.send_message(f"<@{member.id}> has no achievements yet. Play a match to get started.")
         return
     await interaction.response.send_message(f"**{member.display_name}'s achievements**\n" + "\n".join(dict.fromkeys(badges)))
+
+
+@bot.tree.command(name="achievement_create", description="Create a server-specific achievement")
+@app_commands.describe(name="Achievement name", metric="Progress metric", threshold="Required total")
+@app_commands.choices(metric=[app_commands.Choice(name="Games", value="games"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def achievement_create(interaction: discord.Interaction, name: str, metric: app_commands.Choice[str], threshold: int):
+    if threshold < 1 or len(name) > 80:
+        await interaction.response.send_message("Use a positive threshold and an achievement name of 80 characters or fewer.", ephemeral=True)
+        return
+    achievement_id = bot.database.create_achievement(interaction.guild_id, name, metric.value, threshold, interaction.user.id)
+    await interaction.response.send_message(f"Created achievement **#{achievement_id} {name}**: {threshold} {metric.value}.")
+
+
+@bot.tree.command(name="elo_history", description="Show a player's Elo changes")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you", limit="Number of matches")
+@app_commands.choices(mode=mode_choices)
+async def elo_history(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None, limit: int = 10):
+    member = player or interaction.user
+    rows = bot.database.elo_history(interaction.guild_id, member.id, mode.value, limit)
+    if not rows:
+        await interaction.response.send_message("No Elo history found.")
+        return
+    await interaction.response.send_message(f"**{member.display_name} Elo history — {mode_label(mode.value)}**\n" + "\n".join(f"Match #{row['id']}: {row['rating_before']} → {row['rating_before'] + row['rating_delta']} ({row['rating_delta']:+d})" for row in rows))
+
+
+@bot.tree.command(name="confidence", description="Show how established a player's rating is")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def confidence(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    row = bot.database.connection.execute("SELECT rating, games FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone()
+    games = row["games"] if row else 0
+    confidence_value = games / (games + 10) * 100 if games else 0
+    rating_value = row["rating"] if row else bot.database.get_rating(interaction.guild_id, member.id, mode.value)
+    await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)}**\nElo: **{rating_value}**\nRating confidence: **{confidence_value:.0f}%** ({games} games; confidence increases with more results)")
+
+
+@bot.tree.command(name="predict", description="Estimate each team's win probability")
+@app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players")
+@app_commands.choices(mode=mode_choices)
+async def predict(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
+    try:
+        first = parse_team(team_one, team_size(mode.value)); second = parse_team(team_two, team_size(mode.value))
+        if set(first) & set(second):
+            raise ValueError("A player cannot be on both teams")
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    first_rating = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in first) / len(first)
+    second_rating = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in second) / len(second)
+    probability = expected_score(first_rating, second_rating) * 100
+    await interaction.response.send_message(f"**{mode_label(mode.value)} prediction**\nTeam 1 average Elo: **{first_rating:.0f}** — **{probability:.0f}%** chance\nTeam 2 average Elo: **{second_rating:.0f}** — **{100 - probability:.0f}%** chance")
+
+
+@bot.tree.command(name="awards", description="Show performance leaders for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def awards(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.connection.execute("SELECT user_id, SUM(kills) AS kills, SUM(damage) AS damage, SUM(assists) AS assists, SUM(score) AS score FROM match_player_stats WHERE guild_id=? AND mode=? GROUP BY user_id", (interaction.guild_id, mode.value)).fetchall()
+    if not rows:
+        await interaction.response.send_message("No performance data yet.")
+        return
+    categories = [("💀 Slayer", "kills"), ("💥 Damage Dealer", "damage"), ("🎯 Playmaker", "assists"), ("🏅 Scorer", "score")]
+    lines = [f"{label}: <@{max(rows, key=lambda row: row[column])['user_id']}> ({max(rows, key=lambda row: row[column])[column]})" for label, column in categories]
+    await interaction.response.send_message(f"**{mode_label(mode.value)} performance awards**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="stats", description="Show a player's match-stat totals and averages")
