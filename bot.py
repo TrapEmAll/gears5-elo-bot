@@ -17,7 +17,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, expected_score, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_size
+from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, expected_score, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_key, team_size
 
 load_dotenv()
 
