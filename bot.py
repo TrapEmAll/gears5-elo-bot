@@ -1166,16 +1166,11 @@ async def notify_webhook(guild_id: int, content: str):
         return
 
 
-async def player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]:
-    """Resolve friendly Discord names for the per-player stat forms."""
+def player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]:
+    """Resolve friendly cached Discord names without delaying the interaction."""
     labels = {}
     for index, player_id in enumerate(player_ids, 1):
         member = guild.get_member(player_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(player_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                member = None
         if member is None:
             labels[player_id] = f"Player {index}"
         else:
@@ -1719,7 +1714,7 @@ async def match(interaction: discord.Interaction, mode: app_commands.Choice[str]
         if set(first) & set(second):
             raise ValueError("A player cannot be on both teams")
         player_ids = first + second
-        labels = await player_labels(interaction.guild, player_ids)
+        labels = player_labels(interaction.guild, player_ids)
         await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0, map_name or "Unknown", labels))
         return
     except (ValueError, sqlite3.Error) as error:
@@ -1739,7 +1734,7 @@ async def rematch(interaction: discord.Interaction, match_id: int, winner: app_c
     first = [int(value) for value in previous["team_one"].split(",")]
     second = [int(value) for value in previous["team_two"].split(",")]
     player_ids = first + second
-    labels = await player_labels(interaction.guild, player_ids)
+    labels = player_labels(interaction.guild, player_ids)
     await interaction.response.send_modal(PlayerStatsModal(previous["mode"], int(winner.value), first, second, player_ids, {}, 0, previous["map_name"], labels))
 
 
