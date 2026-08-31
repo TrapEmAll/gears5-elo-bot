@@ -39,7 +39,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season_end` — admin-only: end the active season.
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
-- `/leaderboard` — show the top ten players for a mode.
+- `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.
 - `/rating` — show one player's ratings across modes.
 - `/profile` — show a complete player profile with record and performance stats.
 - `/streaks` — show current and best win streak leaders for a mode.

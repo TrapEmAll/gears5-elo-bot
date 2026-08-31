@@ -429,7 +429,7 @@ async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choic
     if not rows:
         await interaction.response.send_message(f"No matches have been recorded for **{mode_label(mode.value)}** yet.")
         return
-    lines = [f"{index}. <@{row['user_id']}> — **{row['rating']}** ({row['wins']}-{row['losses']})" for index, row in enumerate(rows, 1)]
+    lines = [f"{index}. <@{row['user_id']}> — **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {row['wins'] / row['games'] * 100:.0f}% win rate · {row['games']} games" for index, row in enumerate(rows, 1)]
     await interaction.response.send_message(f"**{mode_label(mode.value)} leaderboard**\n" + "\n".join(lines))
 
 
