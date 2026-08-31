@@ -38,6 +38,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode.
 - `/rating` — show one player's ratings across modes.
+- `/profile` — show a complete player profile with record and performance stats.
 - `/stats` — show a player's totals and per-match averages for a mode.
 - `/teamstats` — show the head-to-head record and combined totals for two exact teams.
 - `/undo` — admin-only: remove the latest match so it can be corrected and re-entered.

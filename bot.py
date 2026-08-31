@@ -231,6 +231,22 @@ class EloDatabase:
             (guild_id, user_id),
         ).fetchall()
 
+    def profile_rows(self, guild_id: int, user_id: int):
+        return self.connection.execute(
+            """
+            SELECT r.mode, r.rating, r.wins, r.losses, r.games,
+                   COALESCE(SUM(s.kills), 0) AS kills,
+                   COALESCE(SUM(s.deaths), 0) AS deaths,
+                   COALESCE(SUM(s.damage), 0) AS damage
+            FROM ratings r LEFT JOIN match_player_stats s
+              ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode
+            WHERE r.guild_id=? AND r.user_id=?
+            GROUP BY r.mode, r.rating, r.wins, r.losses, r.games
+            ORDER BY r.games DESC, r.rating DESC
+            """,
+            (guild_id, user_id),
+        ).fetchall()
+
 
 class GearsEloBot(commands.Bot):
     def __init__(self):
@@ -350,6 +366,24 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
         return
     lines = [f"{mode_label(row['mode'])}: **{row['rating']}** ({row['wins']}-{row['losses']})" for row in rows]
     await interaction.response.send_message(f"**{member.display_name}'s ratings**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="profile", description="Show a complete player profile")
+@app_commands.describe(player="Optional player; defaults to you")
+async def profile(interaction: discord.Interaction, player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.profile_rows(interaction.guild_id, member.id)
+    if not rows:
+        await interaction.response.send_message(f"<@{member.id}> has no recorded matches yet.")
+        return
+    favorite = rows[0]
+    lines = []
+    for row in rows:
+        win_rate = row["wins"] / row["games"] * 100 if row["games"] else 0
+        kd = row["kills"] / row["deaths"] if row["deaths"] else float(row["kills"])
+        avg_damage = row["damage"] / row["games"] if row["games"] else 0
+        lines.append(f"{mode_label(row['mode'])}: **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {win_rate:.0f}% wins · K/D {kd:.2f} · {avg_damage:.0f} avg damage")
+    await interaction.response.send_message(f"**{member.display_name}'s profile**\nFavorite mode: **{mode_label(favorite['mode'])}**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="stats", description="Show a player's match-stat totals and averages")
