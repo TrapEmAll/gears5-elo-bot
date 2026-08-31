@@ -27,7 +27,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 ## Manual setup
 
 1. Create a Discord application and bot in the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Enable the `bot` and `applications.commands` scopes in the install URL. The bot only needs the `Send Messages` permission.
+2. Enable the `bot` and `applications.commands` scopes in the install URL. The bot needs `Send Messages`; add `Manage Roles` if you want automatic Elo tier roles.
 3. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 4. Install dependencies with `python -m pip install -r requirements.txt`.
 5. Start it with `python bot.py`.
@@ -40,6 +40,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/settings` — show Elo settings for a mode.
 - `/setelo` — admin-only: set starting rating and K-factor for a mode.
+- `/roles_setup` — admin-only: create Bronze, Silver, Gold, Onyx, and Master roles for a mode; the bot assigns them after matches.
 - `/balance` — build balanced teams from a lobby’s player list.
 - `/queue_join`, `/queue_leave`, `/queue` — join, leave, and view the per-mode matchmaking queue.
 - `/modes` — list supported modes.

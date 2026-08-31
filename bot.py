@@ -20,6 +20,13 @@ DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
 GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DEFAULT_RATING = 1000
 DEFAULT_K_FACTOR = 32
+ELO_TIERS = (
+    (0, "Bronze", discord.Color.from_rgb(176, 112, 64)),
+    (1000, "Silver", discord.Color.light_grey()),
+    (1200, "Gold", discord.Color.gold()),
+    (1400, "Onyx", discord.Color.dark_grey()),
+    (1600, "Master", discord.Color.purple()),
+)
 
 
 class EloDatabase:
@@ -448,6 +455,36 @@ mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mod
 queues: dict[tuple[int, str], list[int]] = {}
 
 
+def elo_tier(rating: int):
+    tier = ELO_TIERS[0]
+    for candidate in ELO_TIERS:
+        if rating >= candidate[0]:
+            tier = candidate
+    return tier
+
+
+async def update_elo_role(guild: discord.Guild, user_id: int, mode: str, rating: int) -> bool:
+    member = guild.get_member(user_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.HTTPException):
+            return False
+    prefix = f"Gears Elo • {mode_label(mode)} • "
+    target = discord.utils.get(guild.roles, name=prefix + elo_tier(rating)[1])
+    if not target:
+        return False
+    try:
+        old_roles = [role for role in member.roles if role.name.startswith(prefix) and role != target]
+        if old_roles:
+            await member.remove_roles(*old_roles, reason="Update Gears Elo tier")
+        if target not in member.roles:
+            await member.add_roles(target, reason="Update Gears Elo tier")
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    return True
+
+
 class PlayerStatsModal(discord.ui.Modal):
     def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str):
         self.mode = mode
@@ -493,7 +530,13 @@ class PlayerStatsModal(discord.ui.Modal):
         mvp_id, mvp_stats = max(self.stats.items(), key=lambda item: (item[1].get("score", 0), item[1].get("kills", 0), item[1].get("damage", 0)))
         team_one_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_one)
         team_two_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_two)
-        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n🏅 MVP: <@{mvp_id}> ({mvp_stats.get('score', 0)} score, {mvp_stats.get('kills', 0)} kills)\n📊 Team scores: **{team_one_score}** — **{team_two_score}**\n{change_text}\nStats saved for {len(self.stats)} players.")
+        role_updates = 0
+        if interaction.guild:
+            for change in changes:
+                if await update_elo_role(interaction.guild, change.user_id, self.mode, change.new_rating):
+                    role_updates += 1
+        role_text = f" Tier roles updated for {role_updates} players." if role_updates else ""
+        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n🏅 MVP: <@{mvp_id}> ({mvp_stats.get('score', 0)} score, {mvp_stats.get('kills', 0)} kills)\n📊 Team scores: **{team_one_score}** — **{team_two_score}**\n{change_text}\nStats saved for {len(self.stats)} players.{role_text}")
 
 
 @bot.tree.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
@@ -520,6 +563,37 @@ async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str
         return
     bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor)
     await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**.")
+
+
+@bot.tree.command(name="roles_setup", description="Create Elo tier roles for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def roles_setup(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    if not interaction.guild:
+        await interaction.response.send_message("This command must be used inside a server.", ephemeral=True)
+        return
+    me = interaction.guild.me
+    if not me or not me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I need the Manage Roles permission before I can create or assign Elo roles.", ephemeral=True)
+        return
+    prefix = f"Gears Elo • {mode_label(mode.value)} • "
+    created = []
+    existing = []
+    for _, tier_name, colour in ELO_TIERS:
+        name = prefix + tier_name
+        if discord.utils.get(interaction.guild.roles, name=name):
+            existing.append(tier_name)
+            continue
+        try:
+            await interaction.guild.create_role(name=name, colour=colour, reason="Set up Gears Elo tier rewards")
+            created.append(tier_name)
+        except (discord.Forbidden, discord.HTTPException) as error:
+            await interaction.response.send_message(f"Could not create Elo roles: {error}", ephemeral=True)
+            return
+    created_text = ", ".join(created) or "none"
+    existing_text = ", ".join(existing) or "none"
+    await interaction.response.send_message(f"**{mode_label(mode.value)} tier roles ready.**\nCreated: {created_text}\nAlready existed: {existing_text}\nThe bot will assign them after each `/match`. Make sure the bot's highest role is above these roles.")
 
 
 @bot.tree.command(name="balance", description="Create balanced teams from a player list")
