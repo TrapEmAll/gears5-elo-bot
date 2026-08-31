@@ -58,6 +58,8 @@ class EloDatabase:
                 assists INTEGER NOT NULL DEFAULT 0,
                 damage INTEGER NOT NULL DEFAULT 0,
                 score INTEGER NOT NULL DEFAULT 0,
+                rating_before INTEGER NOT NULL DEFAULT 0,
+                rating_delta INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (match_id, user_id),
                 FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
             );
@@ -90,6 +92,10 @@ class EloDatabase:
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
         if "damage" not in columns:
             self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN damage INTEGER NOT NULL DEFAULT 0")
+        if "rating_before" not in columns:
+            self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_before INTEGER NOT NULL DEFAULT 0")
+        if "rating_delta" not in columns:
+            self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_delta INTEGER NOT NULL DEFAULT 0")
         self.connection.commit()
 
     def close(self):
@@ -113,8 +119,8 @@ class EloDatabase:
         match_id = cursor.lastrowid
         for user_id, values in stats.items():
             self.connection.execute(
-                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0)),
+                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score, rating_before, rating_delta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), next(change.old_rating for change in changes if change.user_id == user_id), next(change.delta for change in changes if change.user_id == user_id)),
             )
         team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
         team_one_values = self._sum_team_stats(team_one, stats)
@@ -144,6 +150,50 @@ class EloDatabase:
             )
         self.connection.commit()
         return changes
+
+    def undo_latest_match(self, guild_id: int):
+        match = self.connection.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT 1", (guild_id,)).fetchone()
+        if not match:
+            raise ValueError("There are no matches to undo")
+        stats = self.connection.execute("SELECT * FROM match_player_stats WHERE match_id=?", (match["id"],)).fetchall()
+        if not stats or any(row["rating_delta"] == 0 for row in stats):
+            raise ValueError("This match predates undo support and cannot be safely reversed")
+        team_one = list(map(int, match["team_one"].split(",")))
+        team_two = list(map(int, match["team_two"].split(",")))
+        stat_map = {row["user_id"]: dict(row) for row in stats}
+        team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
+        values_one = self._sum_team_stats(team_one, stat_map)
+        values_two = self._sum_team_stats(team_two, stat_map)
+        values_a = values_one if first_is_a else values_two
+        values_b = values_two if first_is_a else values_one
+        winner_is_a = (match["winner"] == 1) == first_is_a
+        columns = ["captures", "breaks", "kills", "deaths", "assists", "damage", "score"]
+        try:
+            for row in stats:
+                won = (row["user_id"] in team_one and match["winner"] == 1) or (row["user_id"] in team_two and match["winner"] == 2)
+                self.connection.execute(
+                    "UPDATE ratings SET rating=rating-?, wins=wins-?, losses=losses-?, games=games-1 WHERE guild_id=? AND user_id=? AND mode=?",
+                    (row["rating_delta"], int(won), int(not won), guild_id, row["user_id"], match["mode"]),
+                )
+                self.connection.execute("DELETE FROM ratings WHERE guild_id=? AND user_id=? AND mode=? AND games<=0", (guild_id, row["user_id"], match["mode"]))
+            self.connection.execute("DELETE FROM team_matchups WHERE guild_id=? AND mode=? AND team_a=? AND team_b=? AND games<=1", (guild_id, match["mode"], team_a, team_b))
+            if self.connection.execute("SELECT changes()").fetchone()[0] == 0:
+                updates = ["games=games-1", "team_a_wins=team_a_wins-?", "team_b_wins=team_b_wins-?"]
+                params: list[int] = [int(winner_is_a), int(not winner_is_a)]
+                for column in columns:
+                    updates.append(f"team_a_{column}=team_a_{column}-?")
+                    params.append(values_a[column])
+                for column in columns:
+                    updates.append(f"team_b_{column}=team_b_{column}-?")
+                    params.append(values_b[column])
+                params.extend([guild_id, match["mode"], team_a, team_b])
+                self.connection.execute(f"UPDATE team_matchups SET {', '.join(updates)} WHERE guild_id=? AND mode=? AND team_a=? AND team_b=?", params)
+            self.connection.execute("DELETE FROM matches WHERE id=?", (match["id"],))
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return match
 
     @staticmethod
     def _sum_team_stats(player_ids: list[int], stats: dict[int, dict[str, int]]) -> dict[str, int]:
@@ -347,6 +397,17 @@ async def teamstats(interaction: discord.Interaction, mode: app_commands.Choice[
         f"**{mode_label(mode.value)} team matchup**\n{first_name}: **{first_wins} wins**\n{second_name}: **{second_wins} wins**\nGames: **{row['games']}**\n"
         f"{first_name} totals — {first_totals}\n{second_name} totals — {second_totals}"
     )
+
+
+@bot.tree.command(name="undo", description="Undo the latest match in this server")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def undo(interaction: discord.Interaction):
+    try:
+        removed = bot.database.undo_latest_match(interaction.guild_id)
+    except (ValueError, sqlite3.Error) as error:
+        await interaction.response.send_message(f"Could not undo match: {error}", ephemeral=True)
+        return
+    await interaction.response.send_message(f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match` if needed.")
 
 
 @bot.event
