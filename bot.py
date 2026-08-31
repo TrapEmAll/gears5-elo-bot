@@ -1104,6 +1104,13 @@ def has_command_access(interaction: discord.Interaction, command_name: str) -> b
     return any(role.id == role_id for role in getattr(interaction.user, "roles", []))
 
 
+async def send_response(interaction: discord.Interaction, *args, **kwargs):
+    """Send the initial response or a follow-up after an early defer."""
+    if interaction.response.is_done():
+        return await interaction.followup.send(*args, **kwargs)
+    return await interaction.response.send_message(*args, **kwargs)
+
+
 class LeaderboardView(discord.ui.View):
     def __init__(self, guild_id: int, mode: str, metric: str):
         super().__init__(timeout=300)
@@ -1642,32 +1649,33 @@ async def captain_set(interaction: discord.Interaction, mode: app_commands.Choic
 @match_group.command(name="confirm", description="Confirm a pending match result")
 @app_commands.describe(match_id="Pending match number")
 async def match_confirm(interaction: discord.Interaction, match_id: int):
+    await interaction.response.defer()
     if not has_command_access(interaction, "match_confirm"):
-        await interaction.response.send_message("You do not have the role required to confirm matches.", ephemeral=True)
+        await send_response(interaction, "You do not have the role required to confirm matches.", ephemeral=True)
         return
     row = bot.database.pending_match(interaction.guild_id, match_id)
     if not row:
-        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        await send_response(interaction, "That pending match was not found.", ephemeral=True)
         return
     team_one = [int(value) for value in row["team_one"].split(",")]
     team_two = [int(value) for value in row["team_two"].split(",")]
     team = 1 if interaction.user.id in team_one else 2 if interaction.user.id in team_two else 0
     if not team:
-        await interaction.response.send_message("Only players in this match can confirm it.", ephemeral=True)
+        await send_response(interaction, "Only players in this match can confirm it.", ephemeral=True)
         return
     assigned_captain = bot.database.captain(interaction.guild_id, row["mode"], team)
     if assigned_captain and assigned_captain != interaction.user.id:
-        await interaction.response.send_message(f"Only the assigned Team {team} captain can confirm this result.", ephemeral=True)
+        await send_response(interaction, f"Only the assigned Team {team} captain can confirm this result.", ephemeral=True)
         return
     confirmed = set(json.loads(row["confirmed_by"]))
     if interaction.user.id in confirmed:
-        await interaction.response.send_message("You already confirmed this match.", ephemeral=True)
+        await send_response(interaction, "You already confirmed this match.", ephemeral=True)
         return
     row = bot.database.confirm_pending_match(interaction.guild_id, match_id, interaction.user.id)
     confirmed = set(json.loads(row["confirmed_by"]))
     confirmed_teams = {1 if user_id in team_one else 2 for user_id in confirmed}
     if confirmed_teams != {1, 2}:
-        await interaction.response.send_message(f"Confirmation saved ({len(confirmed_teams)}/2 teams). A player from the other team still needs to confirm.")
+        await send_response(interaction, f"Confirmation saved ({len(confirmed_teams)}/2 teams). A player from the other team still needs to confirm.")
         return
     await finalize_pending_match(interaction, row, team_one, team_two)
 
@@ -1684,16 +1692,17 @@ async def finalize_pending_match(interaction: discord.Interaction, row: sqlite3.
         for change in changes:
             await update_elo_role(interaction.guild, change.user_id, row["mode"], change.new_rating)
     await notify_webhook(interaction.guild_id, f"{mode_label(row['mode'])} match recorded: Team {row['winner']} won (match #{match_id}).")
-    await interaction.response.send_message(f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
+    await send_response(interaction, f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
 
 
 @match_group.command(name="force_confirm", description="Admin: record a pending match without waiting for both confirmations")
 @app_commands.describe(match_id="Pending match number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def match_force_confirm(interaction: discord.Interaction, match_id: int):
+    await interaction.response.defer()
     row = bot.database.pending_match(interaction.guild_id, match_id)
     if not row:
-        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        await send_response(interaction, "That pending match was not found.", ephemeral=True)
         return
     team_one = [int(value) for value in row["team_one"].split(",")]
     team_two = [int(value) for value in row["team_two"].split(",")]
@@ -2159,10 +2168,11 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
     app_commands.Choice(name="Score", value="score"),
 ])
 async def trend(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None, metric: app_commands.Choice[str] | None = None):
+    await interaction.response.defer()
     member = player or interaction.user
     rows = bot.database.rating_history(interaction.guild_id, member.id, mode.value)
     if not rows:
-        await interaction.response.send_message(f"<@{member.id}> has no recorded matches for **{mode_label(mode.value)}** yet.", ephemeral=True)
+        await send_response(interaction, f"<@{member.id}> has no recorded matches for **{mode_label(mode.value)}** yet.", ephemeral=True)
         return
 
     metric_name = metric.value if metric else "damage"
@@ -2171,7 +2181,7 @@ async def trend(interaction: discord.Interaction, mode: app_commands.Choice[str]
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        await interaction.response.send_message("Charts are unavailable because the plotting dependency is not installed. Run `python -m pip install -r requirements.txt` and restart the bot.", ephemeral=True)
+        await send_response(interaction, "Charts are unavailable because the plotting dependency is not installed. Run `python -m pip install -r requirements.txt` and restart the bot.", ephemeral=True)
         return
 
     match_numbers = list(range(1, len(rows) + 1))
@@ -2191,7 +2201,8 @@ async def trend(interaction: discord.Interaction, mode: app_commands.Choice[str]
     figure.savefig(image, format="png", dpi=140)
     plt.close(figure)
     image.seek(0)
-    await interaction.response.send_message(
+    await send_response(
+        interaction,
         f"**{member.display_name} — {mode_label(mode.value)} trend**\nShowing {len(rows)} matches. Elo: **{ratings[-1]}** · Average {metric_name}: **{sum(performance) / len(performance):.1f}**",
         file=discord.File(image, filename="gears-elo-trend.png"),
     )
@@ -2456,9 +2467,10 @@ async def mapstats(interaction: discord.Interaction, mode: app_commands.Choice[s
 @app_commands.describe(mode="Optional game mode", limit="Number of matches, from 1 to 20")
 @app_commands.choices(mode=mode_choices)
 async def history(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 10):
+    await interaction.response.defer()
     rows = bot.database.match_history(interaction.guild_id, mode.value if mode else None, limit)
     if not rows:
-        await interaction.response.send_message("No recorded matches found.")
+        await send_response(interaction, "No recorded matches found.")
         return
     lines = []
     for row in rows:
@@ -2466,22 +2478,23 @@ async def history(interaction: discord.Interaction, mode: app_commands.Choice[st
         second = " + ".join(f"<@{user_id}>" for user_id in row["team_two"].split(","))
         season_text = f" · {row['season_name']}" if row["season_name"] else ""
         lines.append(f"**#{row['id']} {mode_label(row['mode'])}** · {row['map_name']} · Team {row['winner']} won{season_text}\n{first} vs {second}")
-    await interaction.response.send_message("**Recent match history**\n" + "\n".join(lines))
+    await send_response(interaction, "**Recent match history**\n" + "\n".join(lines))
 
 
 @match_group.command(name="undo", description="Undo the latest match in this server")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def undo(interaction: discord.Interaction):
+    await interaction.response.defer()
     if not has_command_access(interaction, "undo"):
-        await interaction.response.send_message("You do not have the role required to undo matches.", ephemeral=True)
+        await send_response(interaction, "You do not have the role required to undo matches.", ephemeral=True)
         return
     try:
         removed = bot.database.undo_latest_match(interaction.guild_id)
     except (ValueError, sqlite3.Error) as error:
-        await interaction.response.send_message(f"Could not undo match: {error}", ephemeral=True)
+        await send_response(interaction, f"Could not undo match: {error}", ephemeral=True)
         return
     bot.database.audit(interaction.guild_id, interaction.user.id, "match_undone", f"match #{removed['id']}; mode={removed['mode']}")
-    await interaction.response.send_message(f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match` if needed.")
+    await send_response(interaction, f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match record` if needed.")
 
 
 @admin_group.command(name="audit", description="Show recent administrative bot actions")
