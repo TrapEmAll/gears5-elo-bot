@@ -49,6 +49,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/history` — show recent recorded matches, optionally filtered by mode.
 - `/stats` — show a player's totals and per-match averages for a mode.
 - `/teamstats` — show the head-to-head record and combined totals for two exact teams.
+- `/chemistry` — show an exact roster’s overall record and combined stats across opponents.
 - `/undo` — admin-only: remove the latest match so it can be corrected and re-entered.
 
 Example for a 2v2 Gnashers match:
