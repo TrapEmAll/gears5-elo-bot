@@ -6,6 +6,6 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-echo Starting local dashboard at http://127.0.0.1:5050
+echo Starting LAN dashboard on port 5050. Open http://YOUR-PC-IP:5050 from another device.
 ".venv\Scripts\python.exe" dashboard.py
 pause
