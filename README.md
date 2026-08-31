@@ -40,6 +40,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/settings` — show Elo settings for a mode.
 - `/setelo` — admin-only: set starting rating and K-factor for a mode.
 - `/balance` — build balanced teams from a lobby’s player list.
+- `/queue_join`, `/queue_leave`, `/queue` — join, leave, and view the per-mode matchmaking queue.
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.

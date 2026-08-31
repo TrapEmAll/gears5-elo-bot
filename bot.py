@@ -408,6 +408,7 @@ class GearsEloBot(commands.Bot):
 bot = GearsEloBot()
 
 mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mode, info in MODES.items()]
+queues: dict[tuple[int, str], list[int]] = {}
 
 
 class PlayerStatsModal(discord.ui.Modal):
@@ -498,6 +499,49 @@ async def balance(interaction: discord.Interaction, mode: app_commands.Choice[st
     average_one = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in team_one) / len(team_one)
     average_two = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in team_two) / len(team_two)
     await interaction.response.send_message(f"**Balanced {mode_label(mode.value)} teams**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nAverage Elo: **{average_one:.0f}** vs **{average_two:.0f}**")
+
+
+@bot.tree.command(name="queue_join", description="Join the matchmaking queue for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def queue_join(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    key = (interaction.guild_id, mode.value)
+    queue = queues.setdefault(key, [])
+    if interaction.user.id in queue:
+        await interaction.response.send_message("You are already in that queue.", ephemeral=True)
+        return
+    queue.append(interaction.user.id)
+    needed = team_size(mode.value) * 2
+    if len(queue) < needed:
+        await interaction.response.send_message(f"<@{interaction.user.id}> joined **{mode_label(mode.value)}** queue ({len(queue)}/{needed}).")
+        return
+    players = queue[:needed]
+    del queue[:needed]
+    rated = [(player_id, bot.database.get_rating(interaction.guild_id, player_id, mode.value)) for player_id in players]
+    team_one, team_two = balance_teams(rated)
+    await interaction.response.send_message(f"**{mode_label(mode.value)} lobby ready!**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nUse `/match` to record the result.")
+
+
+@bot.tree.command(name="queue_leave", description="Leave the matchmaking queue for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def queue_leave(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    queue = queues.get((interaction.guild_id, mode.value), [])
+    if interaction.user.id not in queue:
+        await interaction.response.send_message("You are not in that queue.", ephemeral=True)
+        return
+    queue.remove(interaction.user.id)
+    await interaction.response.send_message(f"<@{interaction.user.id}> left **{mode_label(mode.value)}** queue.")
+
+
+@bot.tree.command(name="queue", description="Show the matchmaking queue for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def queue_status(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    queue = queues.get((interaction.guild_id, mode.value), [])
+    needed = team_size(mode.value) * 2
+    names = ", ".join(f"<@{player_id}>" for player_id in queue) or "Nobody"
+    await interaction.response.send_message(f"**{mode_label(mode.value)} queue** ({len(queue)}/{needed})\n{names}")
 
 
 @bot.tree.command(name="season", description="Show the active season")
