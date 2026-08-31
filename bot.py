@@ -1163,8 +1163,25 @@ async def notify_webhook(guild_id: int, content: str):
         return
 
 
+async def player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]:
+    """Resolve friendly Discord names for the per-player stat forms."""
+    labels = {}
+    for index, player_id in enumerate(player_ids, 1):
+        member = guild.get_member(player_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(player_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+        if member is None:
+            labels[player_id] = f"Player {index}"
+        else:
+            labels[player_id] = f"{member.display_name} (@{member.name})"
+    return labels
+
+
 class PlayerStatsModal(discord.ui.Modal):
-    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str):
+    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str, labels: dict[int, str]):
         self.mode = mode
         self.winner = winner
         self.team_one = team_one
@@ -1173,9 +1190,9 @@ class PlayerStatsModal(discord.ui.Modal):
         self.stats = stats
         self.index = index
         self.map_name = map_name
+        self.labels = labels
         player_id = player_ids[index]
-        player_name = bot.get_user(player_id)
-        name = player_name.display_name if player_name else str(player_id)
+        name = labels.get(player_id, f"Player {index + 1}")
         super().__init__(title=f"Stats: {name}"[:45], timeout=600)
         self.stat_input = discord.ui.TextInput(
             label=f"Enter stats for {name}"[:45],
@@ -1196,7 +1213,7 @@ class PlayerStatsModal(discord.ui.Modal):
 
         next_index = self.index + 1
         if next_index < len(self.player_ids):
-            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index, self.map_name))
+            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index, self.map_name, self.labels))
             return
 
         try:
@@ -1671,7 +1688,8 @@ async def match(interaction: discord.Interaction, mode: app_commands.Choice[str]
         if set(first) & set(second):
             raise ValueError("A player cannot be on both teams")
         player_ids = first + second
-        await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0, map_name or "Unknown"))
+        labels = await player_labels(interaction.guild, player_ids)
+        await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0, map_name or "Unknown", labels))
         return
     except (ValueError, sqlite3.Error) as error:
         await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
@@ -1689,7 +1707,9 @@ async def rematch(interaction: discord.Interaction, match_id: int, winner: app_c
         return
     first = [int(value) for value in previous["team_one"].split(",")]
     second = [int(value) for value in previous["team_two"].split(",")]
-    await interaction.response.send_modal(PlayerStatsModal(previous["mode"], int(winner.value), first, second, first + second, {}, 0, previous["map_name"]))
+    player_ids = first + second
+    labels = await player_labels(interaction.guild, player_ids)
+    await interaction.response.send_modal(PlayerStatsModal(previous["mode"], int(winner.value), first, second, player_ids, {}, 0, previous["map_name"], labels))
 
 
 @queue_group.command(name="availability", description="Set your availability for finding matches")
