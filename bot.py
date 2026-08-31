@@ -34,6 +34,8 @@ class EloDatabase:
                 wins INTEGER NOT NULL DEFAULT 0,
                 losses INTEGER NOT NULL DEFAULT 0,
                 games INTEGER NOT NULL DEFAULT 0,
+                current_streak INTEGER NOT NULL DEFAULT 0,
+                best_streak INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id, user_id, mode)
             );
             CREATE TABLE IF NOT EXISTS matches (
@@ -96,6 +98,11 @@ class EloDatabase:
             self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_before INTEGER NOT NULL DEFAULT 0")
         if "rating_delta" not in columns:
             self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_delta INTEGER NOT NULL DEFAULT 0")
+        rating_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(ratings)")}
+        if "current_streak" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN current_streak INTEGER NOT NULL DEFAULT 0")
+        if "best_streak" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN best_streak INTEGER NOT NULL DEFAULT 0")
         self.connection.commit()
 
     def close(self):
@@ -140,13 +147,15 @@ class EloDatabase:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
             self.connection.execute(
                 """
-                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
+                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games, current_streak, best_streak)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(guild_id, user_id, mode) DO UPDATE SET
                     rating=excluded.rating, wins=wins+excluded.wins,
-                    losses=losses+excluded.losses, games=games+1
+                    losses=losses+excluded.losses, games=games+1,
+                    current_streak=CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END,
+                    best_streak=MAX(best_streak, CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END)
                 """,
-                (guild_id, change.user_id, mode, change.new_rating, int(did_win), int(not did_win)),
+                (guild_id, change.user_id, mode, change.new_rating, int(did_win), int(not did_win), int(did_win), int(did_win)),
             )
         self.connection.commit()
         return changes
@@ -172,8 +181,8 @@ class EloDatabase:
             for row in stats:
                 won = (row["user_id"] in team_one and match["winner"] == 1) or (row["user_id"] in team_two and match["winner"] == 2)
                 self.connection.execute(
-                    "UPDATE ratings SET rating=rating-?, wins=wins-?, losses=losses-?, games=games-1 WHERE guild_id=? AND user_id=? AND mode=?",
-                    (row["rating_delta"], int(won), int(not won), guild_id, row["user_id"], match["mode"]),
+                    "UPDATE ratings SET rating=rating-?, wins=wins-?, losses=losses-?, games=games-1, current_streak=MAX(0, current_streak-?) WHERE guild_id=? AND user_id=? AND mode=?",
+                    (row["rating_delta"], int(won), int(not won), int(won), guild_id, row["user_id"], match["mode"]),
                 )
                 self.connection.execute("DELETE FROM ratings WHERE guild_id=? AND user_id=? AND mode=? AND games<=0", (guild_id, row["user_id"], match["mode"]))
             self.connection.execute("DELETE FROM team_matchups WHERE guild_id=? AND mode=? AND team_a=? AND team_b=? AND games<=1", (guild_id, match["mode"], team_a, team_b))
@@ -222,6 +231,12 @@ class EloDatabase:
     def leaderboard(self, guild_id: int, mode: str, limit: int = 10):
         return self.connection.execute(
             "SELECT user_id, rating, wins, losses, games FROM ratings WHERE guild_id=? AND mode=? ORDER BY rating DESC, wins DESC LIMIT ?",
+            (guild_id, mode, limit),
+        ).fetchall()
+
+    def streak_leaderboard(self, guild_id: int, mode: str, limit: int = 10):
+        return self.connection.execute(
+            "SELECT user_id, current_streak, best_streak FROM ratings WHERE guild_id=? AND mode=? AND current_streak>0 ORDER BY current_streak DESC, best_streak DESC LIMIT ?",
             (guild_id, mode, limit),
         ).fetchall()
 
@@ -354,6 +369,18 @@ async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choic
         return
     lines = [f"{index}. <@{row['user_id']}> — **{row['rating']}** ({row['wins']}-{row['losses']})" for index, row in enumerate(rows, 1)]
     await interaction.response.send_message(f"**{mode_label(mode.value)} leaderboard**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="streaks", description="Show the current win-streak leaders for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def streaks(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.streak_leaderboard(interaction.guild_id, mode.value)
+    if not rows:
+        await interaction.response.send_message(f"No active win streaks in **{mode_label(mode.value)}**.")
+        return
+    lines = [f"{index}. <@{row['user_id']}> — **{row['current_streak']}** straight wins (best: {row['best_streak']})" for index, row in enumerate(rows, 1)]
+    await interaction.response.send_message(f"**{mode_label(mode.value)} streak leaders**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="rating", description="Show a player's ratings across all modes")
