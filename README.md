@@ -37,6 +37,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season` — show the active season.
 - `/season_start` — admin-only: start a named season.
 - `/season_end` — admin-only: end the active season.
+- `/settings` — show Elo settings for a mode.
+- `/setelo` — admin-only: set starting rating and K-factor for a mode.
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.

@@ -127,6 +127,7 @@ def calculate_match_changes(
     team_one: Iterable[tuple[int, int]],
     team_two: Iterable[tuple[int, int]],
     winner: int,
+    k_factor: int = K_FACTOR,
 ) -> list[RatingChange]:
     """Return each player's rating change. Tuples are (user_id, current_rating)."""
     if mode not in MODES:
@@ -148,8 +149,8 @@ def calculate_match_changes(
     second_expected = 1 - first_expected
     first_score = 1 if winner == 1 else 0
     second_score = 1 - first_score
-    first_delta = round(K_FACTOR * (first_score - first_expected))
-    second_delta = round(K_FACTOR * (second_score - second_expected))
+    first_delta = round(k_factor * (first_score - first_expected))
+    second_delta = round(k_factor * (second_score - second_expected))
 
     changes = [
         RatingChange(player_id, rating, rating + first_delta, first_delta)

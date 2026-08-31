@@ -18,6 +18,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
 GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DEFAULT_RATING = 1000
+DEFAULT_K_FACTOR = 32
 
 
 class EloDatabase:
@@ -114,6 +115,13 @@ class EloDatabase:
                 started_at TEXT NOT NULL,
                 ended_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS elo_settings (
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                starting_rating INTEGER NOT NULL DEFAULT 1000,
+                k_factor INTEGER NOT NULL DEFAULT 32,
+                PRIMARY KEY (guild_id, mode)
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -143,7 +151,15 @@ class EloDatabase:
             "SELECT rating FROM ratings WHERE guild_id=? AND user_id=? AND mode=?",
             (guild_id, user_id, mode),
         ).fetchone()
-        return row["rating"] if row else DEFAULT_RATING
+        return row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
+
+    def elo_settings(self, guild_id: int, mode: str):
+        row = self.connection.execute("SELECT starting_rating, k_factor FROM elo_settings WHERE guild_id=? AND mode=?", (guild_id, mode)).fetchone()
+        return row or {"starting_rating": DEFAULT_RATING, "k_factor": DEFAULT_K_FACTOR}
+
+    def set_elo_settings(self, guild_id: int, mode: str, starting_rating: int, k_factor: int):
+        self.connection.execute("INSERT INTO elo_settings (guild_id, mode, starting_rating, k_factor) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, mode) DO UPDATE SET starting_rating=excluded.starting_rating, k_factor=excluded.k_factor", (guild_id, mode, starting_rating, k_factor))
+        self.connection.commit()
 
     def active_season(self, guild_id: int):
         return self.connection.execute("SELECT * FROM seasons WHERE guild_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (guild_id,)).fetchone()
@@ -166,7 +182,7 @@ class EloDatabase:
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
         rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
-        changes = calculate_match_changes(mode, rated_one, rated_two, winner)
+        changes = calculate_match_changes(mode, rated_one, rated_two, winner, self.elo_settings(guild_id, mode)["k_factor"])
         season = self.active_season(guild_id)
         cursor = self.connection.execute(
             "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id, map_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -446,6 +462,26 @@ class PlayerStatsModal(discord.ui.Modal):
 async def modes(interaction: discord.Interaction):
     lines = [f"• {mode_label(mode)} — {team_size(mode)}v{team_size(mode)}" for mode in MODES]
     await interaction.response.send_message("**Tracked modes**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="settings", description="Show Elo settings for a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def settings(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    row = bot.database.elo_settings(interaction.guild_id, mode.value)
+    await interaction.response.send_message(f"**{mode_label(mode.value)} Elo settings**\nStarting rating: **{row['starting_rating']}**\nK-factor: **{row['k_factor']}**")
+
+
+@bot.tree.command(name="setelo", description="Set starting rating and K-factor for a mode")
+@app_commands.describe(mode="Game mode", starting_rating="Starting rating for new players", k_factor="How quickly ratings move")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str], starting_rating: int, k_factor: int):
+    if not 100 <= starting_rating <= 5000 or not 1 <= k_factor <= 100:
+        await interaction.response.send_message("Starting rating must be 100–5000 and K-factor must be 1–100.", ephemeral=True)
+        return
+    bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor)
+    await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**.")
 
 
 @bot.tree.command(name="season", description="Show the active season")
