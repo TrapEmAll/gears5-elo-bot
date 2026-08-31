@@ -37,6 +37,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season` — show the active season.
 - `/season_start` — admin-only: start a named season.
 - `/season_end` — admin-only: end the active season.
+- `/season_reset` — admin-only: reset current ratings while preserving match history.
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
 - `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
@@ -62,6 +63,12 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players by Elo, wins, win rate, kills, damage, score, or assists.
+- `/teamleaderboard` — rank recurring teams by record and performance.
+- `/player_search`, `/opponents` — find server players and view opponent records.
+- `/match_attach` — attach notes and replay/clip links to matches.
+- `/permission_set` — admin-only: require a Discord role for selected commands.
+- `/backup_now`, `/backup_restore` — create and restore SQLite backups; automatic daily backups run while the bot is online.
+- Leaderboards now use embeds with a refresh button.
 - `/rating` — show one player's ratings across modes.
 - `/trend` — upload an Elo trend chart with damage, kills, or score over time.
 - `/profile` — show a complete player profile with record and performance stats.

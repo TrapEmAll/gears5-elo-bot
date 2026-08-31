@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import sqlite3
 from io import BytesIO
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
+BACKUP_DIRECTORY = DATABASE_PATH.parent / f"{DATABASE_PATH.stem}_backups"
 GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DEFAULT_RATING = 1000
 DEFAULT_K_FACTOR = 32
@@ -234,6 +236,20 @@ class EloDatabase:
                 created_by INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, name)
             );
+            CREATE TABLE IF NOT EXISTS match_annotations (
+                match_id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                replay_url TEXT NOT NULL DEFAULT '',
+                updated_by INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS command_roles (
+                guild_id INTEGER NOT NULL,
+                command_name TEXT NOT NULL,
+                role_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, command_name)
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -290,6 +306,60 @@ class EloDatabase:
         self.connection.execute("UPDATE seasons SET ended_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), season["id"]))
         self.connection.commit()
         return season
+
+    def reset_ratings(self, guild_id: int):
+        self.connection.execute("UPDATE ratings SET rating=?, wins=0, losses=0, games=0, current_streak=0, best_streak=0 WHERE guild_id=?", (DEFAULT_RATING, guild_id))
+        self.connection.commit()
+
+    def team_leaderboard(self, guild_id: int, mode: str, limit: int = 10):
+        return self.connection.execute("SELECT team_key, games, wins, losses, score, kills, damage FROM team_performance WHERE guild_id=? AND mode=? ORDER BY wins DESC, games DESC, team_key LIMIT ?", (guild_id, mode, limit)).fetchall()
+
+    def search_players(self, guild_id: int, query: str, limit: int = 15):
+        pattern = f"%{query.lower()}%"
+        return self.connection.execute("SELECT DISTINCT user_id FROM ratings WHERE guild_id=? AND CAST(user_id AS TEXT) LIKE ? LIMIT ?", (guild_id, pattern, limit)).fetchall()
+
+    def opponent_records(self, guild_id: int, mode: str, user_id: int):
+        rows = self.connection.execute("SELECT winner, team_one, team_two FROM matches WHERE guild_id=? AND mode=? AND (instr(','||team_one||',', ','||?||',')>0 OR instr(','||team_two||',', ','||?||',')>0)", (guild_id, mode, user_id, user_id)).fetchall()
+        records: dict[int, list[int]] = {}
+        for row in rows:
+            first = [int(value) for value in row["team_one"].split(",")]
+            second = [int(value) for value in row["team_two"].split(",")]
+            own = first if user_id in first else second
+            opponents = second if own is first else first
+            won = (row["winner"] == 1 and own is first) or (row["winner"] == 2 and own is second)
+            for opponent in opponents:
+                values = records.setdefault(opponent, [0, 0])
+                values[0 if won else 1] += 1
+        return sorted(records.items(), key=lambda item: (-(item[1][0] + item[1][1]), item[0]))
+
+    def annotate_match(self, guild_id: int, match_id: int, note: str, replay_url: str, updated_by: int):
+        result = self.connection.execute("INSERT INTO match_annotations (match_id, guild_id, note, replay_url, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(match_id) DO UPDATE SET note=excluded.note, replay_url=excluded.replay_url, updated_by=excluded.updated_by, updated_at=excluded.updated_at", (match_id, guild_id, note.strip(), replay_url.strip(), updated_by, datetime.now(timezone.utc).isoformat()))
+        self.connection.commit()
+        return result
+
+    def annotation(self, guild_id: int, match_id: int):
+        return self.connection.execute("SELECT * FROM match_annotations WHERE guild_id=? AND match_id=?", (guild_id, match_id)).fetchone()
+
+    def set_command_role(self, guild_id: int, command_name: str, role_id: int):
+        self.connection.execute("INSERT INTO command_roles (guild_id, command_name, role_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, command_name) DO UPDATE SET role_id=excluded.role_id", (guild_id, command_name.lstrip("/"), role_id))
+        self.connection.commit()
+
+    def command_role(self, guild_id: int, command_name: str):
+        row = self.connection.execute("SELECT role_id FROM command_roles WHERE guild_id=? AND command_name=?", (guild_id, command_name.lstrip("/"))).fetchone()
+        return row["role_id"] if row else None
+
+    def backup(self, destination: Path):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.connection.commit()
+        target = sqlite3.connect(destination)
+        self.connection.backup(target)
+        target.close()
+
+    def restore(self, source: Path):
+        source_connection = sqlite3.connect(source)
+        source_connection.backup(self.connection)
+        source_connection.close()
+        self.connection.commit()
 
     def create_challenge(self, guild_id: int, mode: str, challenger_id: int, opponent_id: int):
         cursor = self.connection.execute("INSERT INTO challenges (guild_id, mode, challenger_id, opponent_id) VALUES (?, ?, ?, ?)", (guild_id, mode, challenger_id, opponent_id))
@@ -695,6 +765,32 @@ mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mod
 queues: dict[tuple[int, str], list[int]] = {}
 
 
+def has_command_access(interaction: discord.Interaction, command_name: str) -> bool:
+    role_id = bot.database.command_role(interaction.guild_id, command_name)
+    if not role_id or interaction.user.guild_permissions.manage_guild:
+        return True
+    return any(role.id == role_id for role in getattr(interaction.user, "roles", []))
+
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, guild_id: int, mode: str, metric: str):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.mode = mode
+        self.metric = metric
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rows = bot.database.leaderboard(self.guild_id, self.mode, self.metric)
+        if not rows:
+            await interaction.response.send_message("No leaderboard data yet.", ephemeral=True)
+            return
+        value_key = "rating" if self.metric == "rating" else self.metric
+        embed = discord.Embed(title=f"{mode_label(self.mode)} leaderboard", description=f"Sorted by **{self.metric}**", colour=discord.Colour.red())
+        embed.description += "\n\n" + "\n".join(f"**{index}.** <@{row['user_id']}> — {row[value_key] if value_key != 'rating' else row['rating']}" for index, row in enumerate(rows, 1))
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 def elo_tier(rating: int):
     tier = ELO_TIERS[0]
     for candidate in ELO_TIERS:
@@ -917,6 +1013,70 @@ async def season_end(interaction: discord.Interaction):
     await interaction.response.send_message(f"Ended **{ended['name']}**. Start another season with `/season_start` when ready.")
 
 
+@bot.tree.command(name="season_reset", description="Reset current ratings for a fresh season")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def season_reset(interaction: discord.Interaction):
+    bot.database.reset_ratings(interaction.guild_id)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "season_reset", "ratings reset; match history preserved")
+    await interaction.response.send_message("✅ Current ratings and season records were reset. Historical matches remain available through `/history` and `/myhistory`.")
+
+
+@bot.tree.command(name="teamleaderboard", description="Rank recurring teams in a mode")
+@app_commands.describe(mode="Game mode", limit="Number of teams")
+@app_commands.choices(mode=mode_choices)
+async def teamleaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str], limit: int = 10):
+    rows = bot.database.team_leaderboard(interaction.guild_id, mode.value, limit)
+    if not rows:
+        await interaction.response.send_message("No recurring teams have recorded matches yet.")
+        return
+    lines = []
+    for index, row in enumerate(rows, 1):
+        roster = " + ".join(f"<@{user_id}>" for user_id in row["team_key"].split(","))
+        lines.append(f"{index}. {roster} — **{row['wins']}-{row['losses']}** · {row['games']} games · {row['damage']} damage")
+    await interaction.response.send_message(f"**{mode_label(mode.value)} team rankings**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="player_search", description="Search server members by name")
+@app_commands.describe(query="Name fragment")
+async def player_search(interaction: discord.Interaction, query: str):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this inside a server.", ephemeral=True)
+        return
+    matches = [member for member in interaction.guild.members if query.lower() in f"{member.display_name} {member.name}".lower()][:15]
+    if not matches:
+        await interaction.response.send_message("No matching players found.")
+        return
+    await interaction.response.send_message("**Players found**\n" + "\n".join(f"{member.mention} — `{member.id}`" for member in matches))
+
+
+@bot.tree.command(name="opponents", description="Show a player's opponent records")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def opponents(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    records = bot.database.opponent_records(interaction.guild_id, mode.value, member.id)
+    if not records:
+        await interaction.response.send_message(f"{member.mention} has no opponent records in that mode.")
+        return
+    lines = [f"<@{opponent}> — **{wins}-{losses}**" for opponent, (wins, losses) in records[:20]]
+    await interaction.response.send_message(f"**{member.display_name}'s opponents — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="match_attach", description="Attach notes or a replay link to a match")
+@app_commands.describe(match_id="Match number", note="Optional match note", replay_url="Optional clip or replay URL")
+async def match_attach(interaction: discord.Interaction, match_id: int, note: str = "", replay_url: str = ""):
+    exists = bot.database.connection.execute("SELECT id FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
+    if not exists:
+        await interaction.response.send_message("That match was not found.", ephemeral=True)
+        return
+    if replay_url and not replay_url.startswith(("https://", "http://")):
+        await interaction.response.send_message("Replay links must start with http:// or https://.", ephemeral=True)
+        return
+    bot.database.annotate_match(interaction.guild_id, match_id, note, replay_url, interaction.user.id)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "match_attached", f"match #{match_id}")
+    await interaction.response.send_message(f"Attached details to match **#{match_id}**.")
+
+
 @bot.tree.command(name="challenge", description="Challenge another player to a 1v1 match")
 @app_commands.describe(mode="1v1 game mode", opponent="Player to challenge")
 @app_commands.choices(mode=[choice for choice in mode_choices if team_size(choice.value) == 1])
@@ -964,6 +1124,9 @@ async def captain_set(interaction: discord.Interaction, mode: app_commands.Choic
 @bot.tree.command(name="match_confirm", description="Confirm a pending match result")
 @app_commands.describe(match_id="Pending match number")
 async def match_confirm(interaction: discord.Interaction, match_id: int):
+    if not has_command_access(interaction, "match_confirm"):
+        await interaction.response.send_message("You do not have the role required to confirm matches.", ephemeral=True)
+        return
     row = bot.database.pending_match(interaction.guild_id, match_id)
     if not row:
         await interaction.response.send_message("That pending match was not found.", ephemeral=True)
@@ -1002,6 +1165,9 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
 @bot.tree.command(name="match_cancel", description="Discard a pending match result")
 @app_commands.describe(match_id="Pending match number")
 async def match_cancel(interaction: discord.Interaction, match_id: int):
+    if not has_command_access(interaction, "match_cancel"):
+        await interaction.response.send_message("You do not have the role required to cancel matches.", ephemeral=True)
+        return
     row = bot.database.pending_match(interaction.guild_id, match_id)
     if not row or interaction.user.id != row["created_by"]:
         await interaction.response.send_message("Only the match submitter can cancel that pending result.", ephemeral=True)
@@ -1015,6 +1181,9 @@ async def match_cancel(interaction: discord.Interaction, match_id: int):
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, map_name: str | None = None):
+    if not has_command_access(interaction, "match"):
+        await interaction.response.send_message("You do not have the role required to submit matches.", ephemeral=True)
+        return
     try:
         size = team_size(mode.value)
         first = parse_team(team_one, size)
@@ -1267,9 +1436,10 @@ async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choic
     if not rows:
         await interaction.response.send_message(f"No matches have been recorded for **{mode_label(mode.value)}** yet.")
         return
-    values = {"rating": "rating", "wins": "wins", "winrate": "wins / games", "kills": "kills", "damage": "damage", "score": "score", "assists": "assists"}
-    lines = [f"{index}. <@{row['user_id']}> — **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {row['wins'] / row['games'] * 100:.0f}% win rate · {row[metric_value] if metric_value != 'winrate' else row['wins'] / row['games'] * 100:.1f} {values[metric_value]}" for index, row in enumerate(rows, 1)]
-    await interaction.response.send_message(f"**{mode_label(mode.value)} leaderboard — {values[metric_value]}**\n" + "\n".join(lines))
+    values = {"rating": "Elo", "wins": "wins", "winrate": "win rate", "kills": "kills", "damage": "damage", "score": "score", "assists": "assists"}
+    embed = discord.Embed(title=f"{mode_label(mode.value)} leaderboard", description=f"Sorted by **{values[metric_value]}**", colour=discord.Colour.red())
+    embed.description += "\n\n" + "\n".join(f"**{index}.** <@{row['user_id']}> — {row['rating']} Elo · {row['wins']}-{row['losses']} · {row[metric_value] if metric_value != 'winrate' else row['wins'] / row['games'] * 100:.1f}" for index, row in enumerate(rows, 1))
+    await interaction.response.send_message(embed=embed, view=LeaderboardView(interaction.guild_id, mode.value, metric_value))
 
 
 @bot.tree.command(name="streaks", description="Show the current win-streak leaders for a mode")
@@ -1548,6 +1718,9 @@ async def history(interaction: discord.Interaction, mode: app_commands.Choice[st
 @bot.tree.command(name="undo", description="Undo the latest match in this server")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def undo(interaction: discord.Interaction):
+    if not has_command_access(interaction, "undo"):
+        await interaction.response.send_message("You do not have the role required to undo matches.", ephemeral=True)
+        return
     try:
         removed = bot.database.undo_latest_match(interaction.guild_id)
     except (ValueError, sqlite3.Error) as error:
@@ -1570,6 +1743,46 @@ async def audit(interaction: discord.Interaction, limit: int = 10):
     await interaction.response.send_message("**Recent audit log**\n" + "\n".join(lines))
 
 
+@bot.tree.command(name="permission_set", description="Require a Discord role for a command")
+@app_commands.describe(command="Command name without slash", role="Required role")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def permission_set(interaction: discord.Interaction, command: str, role: discord.Role):
+    bot.database.set_command_role(interaction.guild_id, command, role.id)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "permission_set", f"/{command.lstrip('/')} requires {role.id}")
+    await interaction.response.send_message(f"Configured **/{command.lstrip('/')}** to require {role.mention} (managers can still use it).")
+
+
+@bot.tree.command(name="backup_now", description="Create a database backup")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def backup_now(interaction: discord.Interaction):
+    BACKUP_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    destination = BACKUP_DIRECTORY / f"backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.sqlite3"
+    bot.database.backup(destination)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "backup_created", destination.name)
+    await interaction.response.send_message(f"Created database backup `{destination.name}`.", ephemeral=True)
+
+
+@bot.tree.command(name="backup_restore", description="Restore a database backup by filename")
+@app_commands.describe(filename="Backup filename from the backup folder")
+@app_commands.checks.has_permissions(administrator=True)
+async def backup_restore(interaction: discord.Interaction, filename: str):
+    source = BACKUP_DIRECTORY / Path(filename).name
+    if not source.is_file() or source.suffix != ".sqlite3":
+        await interaction.response.send_message("That backup file was not found.", ephemeral=True)
+        return
+    bot.database.backup(BACKUP_DIRECTORY / f"pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.sqlite3")
+    bot.database.restore(source)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "backup_restored", source.name)
+    await interaction.response.send_message(f"Restored `{source.name}`. A pre-restore backup was created automatically.", ephemeral=True)
+
+
+@tasks.loop(hours=24)
+async def automatic_backup():
+    BACKUP_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    destination = BACKUP_DIRECTORY / f"automatic-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.sqlite3"
+    bot.database.backup(destination)
+
+
 @tasks.loop(minutes=1)
 async def scheduled_reminders():
     for row in bot.database.due_schedules():
@@ -1586,6 +1799,8 @@ async def on_ready():
     print(f"Logged in as {bot.user}.")
     if not scheduled_reminders.is_running():
         scheduled_reminders.start()
+    if not automatic_backup.is_running():
+        automatic_backup.start()
 
 
 if __name__ == "__main__":
