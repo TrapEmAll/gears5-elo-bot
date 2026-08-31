@@ -6,7 +6,7 @@ import random
 import shutil
 import sqlite3
 from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
@@ -290,6 +290,11 @@ class EloDatabase:
                 no_shows TEXT NOT NULL DEFAULT '[]',
                 created_by INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS temporary_channels (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER PRIMARY KEY,
+                delete_at TEXT NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -432,6 +437,17 @@ class EloDatabase:
 
     def update_lobby(self, guild_id: int, lobby_id: int, status: str, checked_in: list[int], no_shows: list[int]):
         self.connection.execute("UPDATE lobby_sessions SET status=?, checked_in=?, no_shows=? WHERE guild_id=? AND id=?", (status, json.dumps(checked_in), json.dumps(no_shows), guild_id, lobby_id))
+        self.connection.commit()
+
+    def track_channel(self, guild_id: int, channel_id: int, delete_at: str):
+        self.connection.execute("INSERT OR REPLACE INTO temporary_channels (guild_id, channel_id, delete_at) VALUES (?, ?, ?)", (guild_id, channel_id, delete_at))
+        self.connection.commit()
+
+    def due_channels(self):
+        return self.connection.execute("SELECT * FROM temporary_channels WHERE delete_at<=?", (datetime.now(timezone.utc).isoformat(),)).fetchall()
+
+    def untrack_channel(self, channel_id: int):
+        self.connection.execute("DELETE FROM temporary_channels WHERE channel_id=?", (channel_id,))
         self.connection.commit()
 
     def backup(self, destination: Path):
@@ -1582,6 +1598,146 @@ async def schedule(interaction: discord.Interaction, mode: app_commands.Choice[s
     await interaction.response.send_message(f"⏰ Scheduled match **#{schedule_id}** for **{scheduled_at[:16].replace('T', ' ')} UTC**.")
 
 
+@bot.tree.command(name="lobby_create", description="Create a check-in lobby for two teams")
+@app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players")
+@app_commands.choices(mode=mode_choices)
+async def lobby_create(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
+    try:
+        first = parse_team(team_one, team_size(mode.value)); second = parse_team(team_two, team_size(mode.value))
+        if set(first) & set(second):
+            raise ValueError("A player cannot be on both teams")
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    lobby_id = bot.database.create_lobby(interaction.guild_id, mode.value, first, second, interaction.user.id)
+    mentions = " ".join(f"<@{x}>" for x in first + second)
+    await interaction.response.send_message(f"🎮 Lobby **#{lobby_id}** created for {mode_label(mode.value)}. Check in with `/checkin lobby_id:{lobby_id}`.\n{mentions}")
+
+
+@bot.tree.command(name="checkin", description="Check in for a match lobby")
+@app_commands.describe(lobby_id="Lobby number")
+async def checkin(interaction: discord.Interaction, lobby_id: int):
+    row = bot.database.lobby(interaction.guild_id, lobby_id)
+    if not row or row["status"] in ("complete", "cancelled"):
+        await interaction.response.send_message("That lobby is not active.", ephemeral=True)
+        return
+    players = [int(x) for x in row["team_one"].split(",") + row["team_two"].split(",")]
+    if interaction.user.id not in players:
+        await interaction.response.send_message("You are not in this lobby.", ephemeral=True)
+        return
+    checked = set(json.loads(row["checked_in"])); checked.add(interaction.user.id)
+    status = "ready" if len(checked) == len(players) else "checking_in"
+    bot.database.update_lobby(interaction.guild_id, lobby_id, status, sorted(checked), json.loads(row["no_shows"]))
+    await interaction.response.send_message(f"✅ {interaction.user.mention} checked in ({len(checked)}/{len(players)})." + (" Lobby is ready." if status == "ready" else ""))
+
+
+@bot.tree.command(name="lobby_status", description="Show match lobby check-ins")
+@app_commands.describe(lobby_id="Lobby number")
+async def lobby_status(interaction: discord.Interaction, lobby_id: int):
+    row = bot.database.lobby(interaction.guild_id, lobby_id)
+    if not row:
+        await interaction.response.send_message("That lobby was not found.", ephemeral=True)
+        return
+    players = [int(x) for x in row["team_one"].split(",") + row["team_two"].split(",")]
+    checked = set(json.loads(row["checked_in"])); no_shows = set(json.loads(row["no_shows"]))
+    await interaction.response.send_message(f"**Lobby #{lobby_id} — {row['status']}**\nChecked in: {len(checked)}/{len(players)}\nMissing: " + (" ".join(f"<@{x}>" for x in players if x not in checked and x not in no_shows) or "none") + "\nNo-shows: " + (" ".join(f"<@{x}>" for x in no_shows) or "none"))
+
+
+@bot.tree.command(name="no_show", description="Mark a player as a no-show")
+@app_commands.describe(lobby_id="Lobby number", player="Player who missed check-in")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def no_show(interaction: discord.Interaction, lobby_id: int, player: discord.Member):
+    row = bot.database.lobby(interaction.guild_id, lobby_id)
+    if not row:
+        await interaction.response.send_message("That lobby was not found.", ephemeral=True)
+        return
+    no_shows = set(json.loads(row["no_shows"])); no_shows.add(player.id)
+    bot.database.update_lobby(interaction.guild_id, lobby_id, "no_show", json.loads(row["checked_in"]), sorted(no_shows))
+    bot.database.audit(interaction.guild_id, interaction.user.id, "no_show", f"lobby #{lobby_id}; player={player.id}")
+    await interaction.response.send_message(f"Marked {player.mention} as a no-show for lobby **#{lobby_id}**.")
+
+
+@bot.tree.command(name="remake", description="Mark a game as remade without changing ratings")
+@app_commands.describe(reason="Why the game was remade")
+async def remake(interaction: discord.Interaction, reason: str):
+    bot.database.audit(interaction.guild_id, interaction.user.id, "remake", reason[:500])
+    await interaction.response.send_message(f"🔁 Remake logged by {interaction.user.mention}. No Elo or stats were changed. Reason: {reason}")
+
+
+@bot.tree.command(name="forfeit", description="Submit a forfeit result for confirmation")
+@app_commands.describe(mode="Game mode", winner="Winning team", team_one="Team 1 players", team_two="Team 2 players")
+@app_commands.choices(mode=mode_choices, winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+async def forfeit(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str):
+    try:
+        first = parse_team(team_one, team_size(mode.value)); second = parse_team(team_two, team_size(mode.value))
+        if set(first) & set(second):
+            raise ValueError("A player cannot be on both teams")
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    stats = {player_id: {name: 0 for name in stat_names(mode.value)} for player_id in first + second}
+    pending_id = bot.database.create_pending_match(interaction.guild_id, mode.value, int(winner.value), first, second, stats, interaction.user.id, "Forfeit")
+    await interaction.response.send_message(f"Forfeit match **#{pending_id}** submitted. Both sides must confirm with `/match_confirm match_id:{pending_id}`.")
+
+
+@bot.tree.command(name="dispute_resolve", description="Resolve a pending match dispute")
+@app_commands.describe(match_id="Pending match number", decision="Resolution")
+@app_commands.choices(decision=[app_commands.Choice(name="Accept result", value="accept"), app_commands.Choice(name="Reject result", value="reject")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def dispute_resolve(interaction: discord.Interaction, match_id: int, decision: app_commands.Choice[str]):
+    row = bot.database.pending_match(interaction.guild_id, match_id)
+    if not row:
+        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        return
+    if decision.value == "reject":
+        bot.database.delete_pending_match(interaction.guild_id, match_id)
+        bot.database.audit(interaction.guild_id, interaction.user.id, "dispute_rejected", f"pending match #{match_id}")
+        await interaction.response.send_message(f"Rejected and discarded pending match **#{match_id}**.")
+        return
+    stats = {int(user_id): values for user_id, values in json.loads(row["stats_json"]).items()}
+    first = [int(x) for x in row["team_one"].split(",")]; second = [int(x) for x in row["team_two"].split(",")]
+    bot.database.record_match(interaction.guild_id, row["mode"], row["winner"], first, second, stats, row["created_by"], row["map_name"])
+    bot.database.delete_pending_match(interaction.guild_id, match_id)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "dispute_accepted", f"pending match #{match_id}")
+    await interaction.response.send_message(f"Accepted and recorded pending match **#{match_id}**.")
+
+
+@bot.tree.command(name="lfg", description="Post a looking-for-group request")
+@app_commands.describe(mode="Game mode", message="What you are looking for")
+@app_commands.choices(mode=mode_choices)
+async def lfg(interaction: discord.Interaction, mode: app_commands.Choice[str], message: str = "Need players"):
+    await interaction.response.send_message(f"📣 **LFG — {mode_label(mode.value)}**\n{interaction.user.mention} is looking for players: {message}")
+
+
+@bot.tree.command(name="match_channels", description="Create temporary text and voice channels for a match")
+@app_commands.describe(name="Short match name", players="Players to mention")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def match_channels(interaction: discord.Interaction, name: str, players: str = ""):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this inside a server.", ephemeral=True)
+        return
+    slug = "".join(character for character in name.lower().replace(" ", "-") if character.isalnum() or character == "-")[:40] or "match"
+    text_channel = await interaction.guild.create_text_channel(f"match-{slug}", reason="Temporary Gears match channel")
+    voice_channel = await interaction.guild.create_voice_channel(f"Match {name[:80]}", reason="Temporary Gears match channel")
+    delete_at = (datetime.now(timezone.utc).replace(microsecond=0) + timedelta(hours=6)).isoformat()
+    bot.database.track_channel(interaction.guild.id, text_channel.id, delete_at)
+    bot.database.track_channel(interaction.guild.id, voice_channel.id, delete_at)
+    await text_channel.send(f"🎮 Match room for {interaction.user.mention}. {players}" if players else f"🎮 Match room for {interaction.user.mention}.")
+    await interaction.response.send_message(f"Created {text_channel.mention} and {voice_channel.mention}. They will be deleted after six hours.")
+
+
+@bot.tree.command(name="match_channels_close", description="Close temporary match channels")
+@app_commands.describe(channel="Channel to close")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def match_channels_close(interaction: discord.Interaction, channel: discord.TextChannel):
+    if channel.guild.id != interaction.guild_id:
+        await interaction.response.send_message("That channel is not in this server.", ephemeral=True)
+        return
+    await channel.delete(reason="Close temporary Gears match channel")
+    bot.database.untrack_channel(channel.id)
+    await interaction.response.send_message(f"Closed **{channel.name}**.")
+
+
 @bot.tree.command(name="veto_start", description="Start a map ban and pick session")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", maps="Comma-separated map names")
 @app_commands.choices(mode=mode_choices)
@@ -1987,6 +2143,18 @@ async def automatic_backup():
     bot.database.backup(destination)
 
 
+@tasks.loop(minutes=5)
+async def temporary_channel_cleanup():
+    for row in bot.database.due_channels():
+        channel = bot.get_channel(row["channel_id"])
+        if channel:
+            try:
+                await channel.delete(reason="Expired temporary Gears match channel")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        bot.database.untrack_channel(row["channel_id"])
+
+
 @tasks.loop(minutes=1)
 async def scheduled_reminders():
     for row in bot.database.due_schedules():
@@ -2005,6 +2173,8 @@ async def on_ready():
         scheduled_reminders.start()
     if not automatic_backup.is_running():
         automatic_backup.start()
+    if not temporary_channel_cleanup.is_running():
+        temporary_channel_cleanup.start()
 
 
 if __name__ == "__main__":
