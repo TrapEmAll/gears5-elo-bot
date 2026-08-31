@@ -307,6 +307,20 @@ class EloDatabase:
             (guild_id, user_id),
         ).fetchall()
 
+    def achievement_rows(self, guild_id: int, user_id: int):
+        return self.connection.execute(
+            """
+            SELECT r.mode, r.games, r.wins, r.losses, r.current_streak, r.best_streak,
+                   COALESCE(SUM(s.kills), 0) AS kills, COALESCE(SUM(s.damage), 0) AS damage,
+                   COALESCE(SUM(s.captures), 0) AS captures
+            FROM ratings r LEFT JOIN match_player_stats s
+              ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode
+            WHERE r.guild_id=? AND r.user_id=?
+            GROUP BY r.mode, r.games, r.wins, r.losses, r.current_streak, r.best_streak
+            """,
+            (guild_id, user_id),
+        ).fetchall()
+
 
 class GearsEloBot(commands.Bot):
     def __init__(self):
@@ -489,6 +503,34 @@ async def profile(interaction: discord.Interaction, player: discord.Member | Non
         avg_damage = row["damage"] / row["games"] if row["games"] else 0
         lines.append(f"{mode_label(row['mode'])}: **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {win_rate:.0f}% wins · K/D {kd:.2f} · {avg_damage:.0f} avg damage")
     await interaction.response.send_message(f"**{member.display_name}'s profile**\nFavorite mode: **{mode_label(favorite['mode'])}**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="achievements", description="Show a player's earned badges")
+@app_commands.describe(player="Optional player; defaults to you")
+async def achievements(interaction: discord.Interaction, player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.achievement_rows(interaction.guild_id, member.id)
+    badges: list[str] = []
+    for row in rows:
+        mode = mode_label(row["mode"])
+        if row["games"] >= 1:
+            badges.append(f"🎮 First Match — {mode}")
+        if row["games"] >= 10:
+            badges.append(f"🏆 Veteran — {mode}")
+        if row["wins"] > row["losses"]:
+            badges.append(f"📈 Winning Record — {mode}")
+        if row["best_streak"] >= 5:
+            badges.append(f"🔥 Unstoppable — {mode}")
+        if row["kills"] >= 100:
+            badges.append(f"💀 Slayer — {mode}")
+        if row["damage"] >= 10000:
+            badges.append(f"💥 Damage Dealer — {mode}")
+        if row["mode"].startswith("control_") and row["captures"] >= 25:
+            badges.append(f"🚩 Objective Player — {mode}")
+    if not badges:
+        await interaction.response.send_message(f"<@{member.id}> has no achievements yet. Play a match to get started.")
+        return
+    await interaction.response.send_message(f"**{member.display_name}'s achievements**\n" + "\n".join(dict.fromkeys(badges)))
 
 
 @bot.tree.command(name="stats", description="Show a player's match-stat totals and averages")

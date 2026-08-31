@@ -42,6 +42,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.
 - `/rating` — show one player's ratings across modes.
 - `/profile` — show a complete player profile with record and performance stats.
+- `/achievements` — show earned player badges.
 - `/streaks` — show current and best win streak leaders for a mode.
 - `/mapstats` — show match counts and team wins by map.
 - `/history` — show recent recorded matches, optionally filtered by mode.
