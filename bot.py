@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from elo import MODES, calculate_match_changes, canonical_matchup, mode_label, parse_player_stats, parse_team, stat_names, team_size
+from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_size
 
 load_dotenv()
 
@@ -482,6 +482,22 @@ async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str
         return
     bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor)
     await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**.")
+
+
+@bot.tree.command(name="balance", description="Create balanced teams from a player list")
+@app_commands.describe(mode="Game mode", players="Comma-separated player mentions or IDs")
+@app_commands.choices(mode=mode_choices)
+async def balance(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
+    try:
+        player_ids = parse_player_list(players, team_size(mode.value) * 2, team_size(mode.value) * 2)
+        balanced_one = [(player_id, bot.database.get_rating(interaction.guild_id, player_id, mode.value)) for player_id in player_ids]
+        team_one, team_two = balance_teams(balanced_one)
+    except ValueError as error:
+        await interaction.response.send_message(f"Could not balance teams: {error}", ephemeral=True)
+        return
+    average_one = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in team_one) / len(team_one)
+    average_two = sum(bot.database.get_rating(interaction.guild_id, player_id, mode.value) for player_id in team_two) / len(team_two)
+    await interaction.response.send_message(f"**Balanced {mode_label(mode.value)} teams**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nAverage Elo: **{average_one:.0f}** vs **{average_two:.0f}**")
 
 
 @bot.tree.command(name="season", description="Show the active season")

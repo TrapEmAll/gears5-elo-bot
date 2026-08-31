@@ -1,6 +1,6 @@
 import unittest
 
-from elo import calculate_match_changes, canonical_matchup, parse_match_stats, parse_player_stats, parse_team, team_key
+from elo import balance_teams, calculate_match_changes, canonical_matchup, parse_match_stats, parse_player_stats, parse_team, team_key
 
 
 class EloTests(unittest.TestCase):
@@ -55,6 +55,12 @@ class EloTests(unittest.TestCase):
         second = canonical_matchup([4, 3], [2, 1])
         self.assertEqual(first[:2], second[:2])
         self.assertNotEqual(first[2], second[2])
+
+    def test_balance_teams(self):
+        team_one, team_two = balance_teams([(1, 1200), (2, 1100), (3, 1000), (4, 900)])
+        self.assertEqual(len(team_one), 2)
+        self.assertEqual(len(team_two), 2)
+        self.assertEqual(sum(dict([(1, 1200), (2, 1100), (3, 1000), (4, 900)])[player] for player in team_one), 2100)
 
 
 if __name__ == "__main__":

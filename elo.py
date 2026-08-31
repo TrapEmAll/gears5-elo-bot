@@ -52,6 +52,31 @@ def parse_team(raw: str, expected_size: int) -> list[int]:
     return ids
 
 
+def parse_player_list(raw: str, minimum: int = 2, maximum: int = 8) -> list[int]:
+    players = [piece.strip() for piece in raw.split(",") if piece.strip()]
+    if not minimum <= len(players) <= maximum or len(players) % 2:
+        raise ValueError(f"Enter an even number of players between {minimum} and {maximum}")
+    ids = [parse_team(player, 1)[0] for player in players]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Each player must be listed only once")
+    return ids
+
+
+def balance_teams(ratings: Iterable[tuple[int, int]]) -> tuple[list[int], list[int]]:
+    ordered = sorted(ratings, key=lambda item: item[1], reverse=True)
+    team_one: list[int] = []
+    team_two: list[int] = []
+    rating_one = rating_two = 0
+    for player_id, rating in ordered:
+        if rating_one <= rating_two and len(team_one) < len(ordered) // 2:
+            team_one.append(player_id)
+            rating_one += rating
+        else:
+            team_two.append(player_id)
+            rating_two += rating
+    return team_one, team_two
+
+
 def team_key(player_ids: Iterable[int]) -> str:
     return ",".join(map(str, sorted(player_ids)))
 
