@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
@@ -89,6 +90,13 @@ class EloDatabase:
                 team_b_score INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id, mode, team_a, team_b)
             );
+            CREATE TABLE IF NOT EXISTS seasons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -98,6 +106,9 @@ class EloDatabase:
             self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_before INTEGER NOT NULL DEFAULT 0")
         if "rating_delta" not in columns:
             self.connection.execute("ALTER TABLE match_player_stats ADD COLUMN rating_delta INTEGER NOT NULL DEFAULT 0")
+        match_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(matches)")}
+        if "season_id" not in match_columns:
+            self.connection.execute("ALTER TABLE matches ADD COLUMN season_id INTEGER")
         rating_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(ratings)")}
         if "current_streak" not in rating_columns:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN current_streak INTEGER NOT NULL DEFAULT 0")
@@ -115,13 +126,32 @@ class EloDatabase:
         ).fetchone()
         return row["rating"] if row else DEFAULT_RATING
 
+    def active_season(self, guild_id: int):
+        return self.connection.execute("SELECT * FROM seasons WHERE guild_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (guild_id,)).fetchone()
+
+    def start_season(self, guild_id: int, name: str):
+        if self.active_season(guild_id):
+            raise ValueError("End the current season before starting a new one")
+        cursor = self.connection.execute("INSERT INTO seasons (guild_id, name, started_at) VALUES (?, ?, ?)", (guild_id, name.strip(), datetime.now(timezone.utc).isoformat()))
+        self.connection.commit()
+        return self.connection.execute("SELECT * FROM seasons WHERE id=?", (cursor.lastrowid,)).fetchone()
+
+    def end_season(self, guild_id: int):
+        season = self.active_season(guild_id)
+        if not season:
+            raise ValueError("There is no active season")
+        self.connection.execute("UPDATE seasons SET ended_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), season["id"]))
+        self.connection.commit()
+        return season
+
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
         rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
         changes = calculate_match_changes(mode, rated_one, rated_two, winner)
+        season = self.active_season(guild_id)
         cursor = self.connection.execute(
-            "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by) VALUES (?, ?, ?, ?, ?, ?)",
-            (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by),
+            "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by, season["id"] if season else None),
         )
         match_id = cursor.lastrowid
         for user_id, values in stats.items():
@@ -338,6 +368,38 @@ class PlayerStatsModal(discord.ui.Modal):
 async def modes(interaction: discord.Interaction):
     lines = [f"• {mode_label(mode)} — {team_size(mode)}v{team_size(mode)}" for mode in MODES]
     await interaction.response.send_message("**Tracked modes**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="season", description="Show the active season")
+async def season(interaction: discord.Interaction):
+    active = bot.database.active_season(interaction.guild_id)
+    if not active:
+        await interaction.response.send_message("There is no active season. A manager can use `/season_start` to begin one.")
+        return
+    await interaction.response.send_message(f"**Active season:** {active['name']}\nStarted: {active['started_at'][:10]}\nNew matches are being recorded in this season.")
+
+
+@bot.tree.command(name="season_start", description="Start a named season")
+@app_commands.describe(name="Season name, such as Season 1")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def season_start(interaction: discord.Interaction, name: str):
+    try:
+        active = bot.database.start_season(interaction.guild_id, name)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    await interaction.response.send_message(f"Started **{active['name']}**. Future matches will be tagged to this season.")
+
+
+@bot.tree.command(name="season_end", description="End the active season")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def season_end(interaction: discord.Interaction):
+    try:
+        ended = bot.database.end_season(interaction.guild_id)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    await interaction.response.send_message(f"Ended **{ended['name']}**. Start another season with `/season_start` when ready.")
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")

@@ -34,6 +34,9 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 
 ## Commands
 
+- `/season` — show the active season.
+- `/season_start` — admin-only: start a named season.
+- `/season_end` — admin-only: end the active season.
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode.
