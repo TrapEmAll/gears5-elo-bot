@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import random
 import shutil
 import sqlite3
 from io import BytesIO
@@ -250,6 +251,45 @@ class EloDatabase:
                 role_id INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, command_name)
             );
+            CREATE TABLE IF NOT EXISTS tournaments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                format TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'registration',
+                created_by INTEGER NOT NULL,
+                bracket TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE IF NOT EXISTS tournament_entries (
+                tournament_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                team_name TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (tournament_id, user_id),
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                players TEXT NOT NULL,
+                team_one TEXT NOT NULL DEFAULT '[]',
+                team_two TEXT NOT NULL DEFAULT '[]',
+                turn INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS lobby_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team_one TEXT NOT NULL,
+                team_two TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'scheduled',
+                checked_in TEXT NOT NULL DEFAULT '[]',
+                no_shows TEXT NOT NULL DEFAULT '[]',
+                created_by INTEGER NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -350,6 +390,49 @@ class EloDatabase:
     def command_role(self, guild_id: int, command_name: str):
         row = self.connection.execute("SELECT role_id FROM command_roles WHERE guild_id=? AND command_name=?", (guild_id, command_name.lstrip("/"))).fetchone()
         return row["role_id"] if row else None
+
+    def create_tournament(self, guild_id: int, name: str, mode: str, tournament_format: str, created_by: int):
+        cursor = self.connection.execute("INSERT INTO tournaments (guild_id, name, mode, format, created_by) VALUES (?, ?, ?, ?, ?)", (guild_id, name.strip(), mode, tournament_format, created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def tournament(self, guild_id: int, tournament_id: int):
+        return self.connection.execute("SELECT * FROM tournaments WHERE guild_id=? AND id=?", (guild_id, tournament_id)).fetchone()
+
+    def tournament_join(self, tournament_id: int, user_id: int, team_name: str = ""):
+        self.connection.execute("INSERT OR IGNORE INTO tournament_entries (tournament_id, user_id, team_name) VALUES (?, ?, ?)", (tournament_id, user_id, team_name.strip()))
+        self.connection.commit()
+
+    def tournament_entries(self, tournament_id: int):
+        return self.connection.execute("SELECT user_id, team_name FROM tournament_entries WHERE tournament_id=? ORDER BY user_id", (tournament_id,)).fetchall()
+
+    def set_tournament_bracket(self, tournament_id: int, bracket: list[dict]):
+        self.connection.execute("UPDATE tournaments SET bracket=?, status='active' WHERE id=?", (json.dumps(bracket), tournament_id))
+        self.connection.commit()
+
+    def create_draft(self, guild_id: int, mode: str, players: list[int], created_by: int):
+        cursor = self.connection.execute("INSERT INTO drafts (guild_id, mode, players, created_by) VALUES (?, ?, ?, ?)", (guild_id, mode, json.dumps(players), created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def draft(self, guild_id: int, draft_id: int):
+        return self.connection.execute("SELECT * FROM drafts WHERE guild_id=? AND id=?", (guild_id, draft_id)).fetchone()
+
+    def update_draft(self, guild_id: int, draft_id: int, team_one: list[int], team_two: list[int], turn: int, status: str):
+        self.connection.execute("UPDATE drafts SET team_one=?, team_two=?, turn=?, status=? WHERE guild_id=? AND id=?", (json.dumps(team_one), json.dumps(team_two), turn, status, guild_id, draft_id))
+        self.connection.commit()
+
+    def create_lobby(self, guild_id: int, mode: str, team_one: list[int], team_two: list[int], created_by: int):
+        cursor = self.connection.execute("INSERT INTO lobby_sessions (guild_id, mode, team_one, team_two, created_by) VALUES (?, ?, ?, ?, ?)", (guild_id, mode, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def lobby(self, guild_id: int, lobby_id: int):
+        return self.connection.execute("SELECT * FROM lobby_sessions WHERE guild_id=? AND id=?", (guild_id, lobby_id)).fetchone()
+
+    def update_lobby(self, guild_id: int, lobby_id: int, status: str, checked_in: list[int], no_shows: list[int]):
+        self.connection.execute("UPDATE lobby_sessions SET status=?, checked_in=?, no_shows=? WHERE guild_id=? AND id=?", (status, json.dumps(checked_in), json.dumps(no_shows), guild_id, lobby_id))
+        self.connection.commit()
 
     def backup(self, destination: Path):
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -984,6 +1067,67 @@ async def queue_status(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"**{mode_label(mode.value)} queue** ({len(queue)}/{needed})\n{names}")
 
 
+@bot.tree.command(name="random_teams", description="Randomize a lobby into two teams")
+@app_commands.describe(mode="Game mode", players="Comma-separated players")
+@app_commands.choices(mode=mode_choices)
+async def random_teams(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
+    try:
+        roster = parse_player_list(players, team_size(mode.value) * 2, team_size(mode.value) * 2)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    random.shuffle(roster)
+    size = len(roster) // 2
+    await interaction.response.send_message(f"**Random teams — {mode_label(mode.value)}**\nTeam 1: " + " + ".join(f"<@{x}>" for x in roster[:size]) + "\nTeam 2: " + " + ".join(f"<@{x}>" for x in roster[size:]))
+
+
+@bot.tree.command(name="draft_start", description="Start a captain-style player draft")
+@app_commands.describe(mode="Game mode", players="Comma-separated players")
+@app_commands.choices(mode=mode_choices)
+async def draft_start(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
+    try:
+        roster = parse_player_list(players, team_size(mode.value) * 2, team_size(mode.value) * 2)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    draft_id = bot.database.create_draft(interaction.guild_id, mode.value, roster, interaction.user.id)
+    await interaction.response.send_message(f"🎯 Draft **#{draft_id}** started for {mode_label(mode.value)} with {len(roster)} players. Team 1 picks first using `/draft_pick draft_id:{draft_id} player:@player`.")
+
+
+@bot.tree.command(name="draft_pick", description="Make a pick in an active draft")
+@app_commands.describe(draft_id="Draft number", player="Player to pick")
+async def draft_pick(interaction: discord.Interaction, draft_id: int, player: discord.Member):
+    row = bot.database.draft(interaction.guild_id, draft_id)
+    if not row or row["status"] != "open":
+        await interaction.response.send_message("That draft is not open.", ephemeral=True)
+        return
+    available = set(json.loads(row["players"]))
+    team_one = json.loads(row["team_one"]); team_two = json.loads(row["team_two"])
+    if player.id not in available or player.id in team_one or player.id in team_two:
+        await interaction.response.send_message("That player is not available in this draft.", ephemeral=True)
+        return
+    target = team_one if row["turn"] == 1 else team_two
+    target.append(player.id)
+    completed = len(target) == team_size(row["mode"])
+    next_turn = 2 if row["turn"] == 1 else 1
+    status = "complete" if len(team_one) + len(team_two) == len(available) else "open"
+    bot.database.update_draft(interaction.guild_id, draft_id, team_one, team_two, next_turn, status)
+    await interaction.response.send_message(f"Team {row['turn']} picked {player.mention}. " + (f"Teams complete: {' + '.join(f'<@{x}>' for x in team_one)} vs {' + '.join(f'<@{x}>' for x in team_two)}" if status == "complete" else f"Team {next_turn} picks next."))
+
+
+@bot.tree.command(name="draft_suggest", description="Suggest captain draft picks by Elo")
+@app_commands.describe(mode="Game mode", players="Comma-separated players")
+@app_commands.choices(mode=mode_choices)
+async def draft_suggest(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
+    try:
+        roster = parse_player_list(players, team_size(mode.value) * 2, team_size(mode.value) * 2)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    rated = sorted(((player_id, bot.database.get_rating(interaction.guild_id, player_id, mode.value)) for player_id in roster), key=lambda item: item[1], reverse=True)
+    await interaction.response.send_message("**Suggested snake-draft order**\n" + "\n".join(f"{index}. <@{player_id}> — {rating} Elo" for index, (player_id, rating) in enumerate(rated, 1)))
+
+
 @bot.tree.command(name="season", description="Show the active season")
 async def season(interaction: discord.Interaction):
     active = bot.database.active_season(interaction.guild_id)
@@ -1022,6 +1166,63 @@ async def season_reset(interaction: discord.Interaction):
     bot.database.reset_ratings(interaction.guild_id)
     bot.database.audit(interaction.guild_id, interaction.user.id, "season_reset", "ratings reset; match history preserved")
     await interaction.response.send_message("✅ Current ratings and season records were reset. Historical matches remain available through `/history` and `/myhistory`.")
+
+
+@bot.tree.command(name="tournament_create", description="Create a tournament registration")
+@app_commands.describe(name="Tournament name", mode="Game mode", format="Tournament format")
+@app_commands.choices(mode=mode_choices, format=[app_commands.Choice(name="Single elimination", value="single"), app_commands.Choice(name="Double elimination", value="double"), app_commands.Choice(name="Round robin", value="round_robin")])
+async def tournament_create(interaction: discord.Interaction, name: str, mode: app_commands.Choice[str], format: app_commands.Choice[str]):
+    tournament_id = bot.database.create_tournament(interaction.guild_id, name, mode.value, format.value, interaction.user.id)
+    await interaction.response.send_message(f"🏆 Created **{name}** tournament **#{tournament_id}** ({format.name}). Players can register with `/tournament_join tournament_id:{tournament_id}`.")
+
+
+@bot.tree.command(name="tournament_join", description="Register for a tournament")
+@app_commands.describe(tournament_id="Tournament number", team_name="Optional team name")
+async def tournament_join(interaction: discord.Interaction, tournament_id: int, team_name: str = ""):
+    tournament = bot.database.tournament(interaction.guild_id, tournament_id)
+    if not tournament or tournament["status"] != "registration":
+        await interaction.response.send_message("That tournament is not accepting registrations.", ephemeral=True)
+        return
+    bot.database.tournament_join(tournament_id, interaction.user.id, team_name)
+    await interaction.response.send_message(f"Registered {interaction.user.mention} for **{tournament['name']}**.")
+
+
+@bot.tree.command(name="tournament_start", description="Generate a tournament bracket")
+@app_commands.describe(tournament_id="Tournament number")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def tournament_start(interaction: discord.Interaction, tournament_id: int):
+    tournament = bot.database.tournament(interaction.guild_id, tournament_id)
+    if not tournament or tournament["status"] != "registration":
+        await interaction.response.send_message("That tournament is not available to start.", ephemeral=True)
+        return
+    entries = [row["user_id"] for row in bot.database.tournament_entries(tournament_id)]
+    if len(entries) < 2:
+        await interaction.response.send_message("At least two players or teams are required.", ephemeral=True)
+        return
+    bracket = []
+    if tournament["format"] == "round_robin":
+        for index, first in enumerate(entries):
+            for second in entries[index + 1:]:
+                bracket.append({"round": 1, "team_one": [first], "team_two": [second], "status": "open"})
+    else:
+        for index in range(0, len(entries) - 1, 2):
+            bracket.append({"round": 1, "team_one": [entries[index]], "team_two": [entries[index + 1]], "status": "open"})
+    bot.database.set_tournament_bracket(tournament_id, bracket)
+    await interaction.response.send_message(f"✅ Started **{tournament['name']}** with {len(bracket)} opening matchup(s).\n" + "\n".join(f"Game {index}: <@{item['team_one'][0]}> vs <@{item['team_two'][0]}>" for index, item in enumerate(bracket, 1)))
+
+
+@bot.tree.command(name="tournament_bracket", description="Show a tournament bracket")
+@app_commands.describe(tournament_id="Tournament number")
+async def tournament_bracket(interaction: discord.Interaction, tournament_id: int):
+    tournament = bot.database.tournament(interaction.guild_id, tournament_id)
+    if not tournament:
+        await interaction.response.send_message("That tournament was not found.", ephemeral=True)
+        return
+    bracket = json.loads(tournament["bracket"])
+    if not bracket:
+        await interaction.response.send_message(f"**{tournament['name']}** is still accepting registrations.")
+        return
+    await interaction.response.send_message(f"**{tournament['name']} bracket**\n" + "\n".join(f"Round {item['round']}: <@{item['team_one'][0]}> vs <@{item['team_two'][0]}> — {item['status']}" for item in bracket))
 
 
 @bot.tree.command(name="teamleaderboard", description="Rank recurring teams in a mode")
