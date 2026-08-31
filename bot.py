@@ -308,7 +308,10 @@ class EloDatabase:
         return season
 
     def reset_ratings(self, guild_id: int):
-        self.connection.execute("UPDATE ratings SET rating=?, wins=0, losses=0, games=0, current_streak=0, best_streak=0 WHERE guild_id=?", (DEFAULT_RATING, guild_id))
+        rows = self.connection.execute("SELECT user_id, mode FROM ratings WHERE guild_id=?", (guild_id,)).fetchall()
+        for row in rows:
+            starting_rating = self.elo_settings(guild_id, row["mode"])["starting_rating"]
+            self.connection.execute("UPDATE ratings SET rating=?, current_streak=0 WHERE guild_id=? AND user_id=? AND mode=?", (starting_rating, guild_id, row["user_id"], row["mode"]))
         self.connection.commit()
 
     def team_leaderboard(self, guild_id: int, mode: str, limit: int = 10):

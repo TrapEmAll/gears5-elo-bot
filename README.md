@@ -37,7 +37,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season` — show the active season.
 - `/season_start` — admin-only: start a named season.
 - `/season_end` — admin-only: end the active season.
-- `/season_reset` — admin-only: reset current ratings while preserving match history.
+- `/season_reset` — admin-only: reset current Elo and streaks while preserving lifetime records and match history.
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
 - `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
