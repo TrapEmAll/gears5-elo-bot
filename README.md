@@ -46,7 +46,11 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/preset_save`, `/presets`, `/preset_delete` — save and reuse frequent team rosters.
 - `/myhistory` — view your recent matches and personal stats.
 - `/mapplayer` — view a player's performance by map.
+- `/teamhistory` — view an exact recurring team's record and combined stats.
+- `/profile_set` — save an Xbox gamertag and alternate aliases for player search.
+- `/clips` — show attached match replay/clip links.
 - `/announce` — admin leaderboard announcement.
+- `/announcement_channel`, `/announcement_schedule`, `/announcement_cancel` — configure recurring leaderboard announcements.
 - `/match_edit` — admin correction of a player's stats; ratings are intentionally unchanged.
 - `/rematch` — reuse teams from a previous match.
 - `/series_start`, `/series_update`, `/series_status` — track BO3 and BO5 series.
@@ -82,6 +86,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - Match completion — automatically posts an MVP, team score totals, and Elo changes.
 - `/streaks` — show current and best win streak leaders for a mode.
 - `/mapstats` — show match counts and team wins by map.
+- `/maintenance` — admin-only: pause or resume match submissions.
 - `/history` — show recent recorded matches, optionally filtered by mode.
 - `/stats` — show a player's totals and per-match averages for a mode.
 - `/teamstats` — show the head-to-head record and combined totals for two exact teams.
@@ -91,6 +96,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 Example for a 2v2 Gnashers match:
 
 `/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave map_name:Checkout`
+
+Administrators can use `/setelo` to configure a rating floor and the number of provisional games in addition to the starting rating and K-factor. The dashboard refreshes automatically and supports an all-mode filter plus JSON leaderboard endpoints at `/api/leaderboard/<mode>`.
 
 After submitting the match, the bot opens a small form for each player. Enter only that player's stats. Every mode requires `damage`; 1v1 Gnashers requires `kills`, `deaths`, `damage`, and `score`; 2v2 Gnashers also includes `assists`:
 

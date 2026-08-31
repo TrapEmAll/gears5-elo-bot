@@ -38,9 +38,16 @@ ELO_TIERS = (
 
 class EloDatabase:
     def __init__(self, path: Path):
+        existing_schema = path.exists() and path.stat().st_size > 0
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        schema_version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if existing_schema and schema_version < 2:
+            backup_directory = path.parent / f"{path.stem}_backups"
+            backup_directory.mkdir(parents=True, exist_ok=True)
+            backup_path = backup_directory / f"{path.stem}_pre_migration_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.sqlite3"
+            shutil.copy2(path, backup_path)
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS ratings (
@@ -53,6 +60,8 @@ class EloDatabase:
                 games INTEGER NOT NULL DEFAULT 0,
                 current_streak INTEGER NOT NULL DEFAULT 0,
                 best_streak INTEGER NOT NULL DEFAULT 0,
+                provisional_games INTEGER NOT NULL DEFAULT 0,
+                peak_rating INTEGER NOT NULL DEFAULT 1000,
                 PRIMARY KEY (guild_id, user_id, mode)
             );
             CREATE TABLE IF NOT EXISTS matches (
@@ -135,6 +144,8 @@ class EloDatabase:
                 mode TEXT NOT NULL,
                 starting_rating INTEGER NOT NULL DEFAULT 1000,
                 k_factor INTEGER NOT NULL DEFAULT 32,
+                rating_floor INTEGER NOT NULL DEFAULT 0,
+                provisional_games INTEGER NOT NULL DEFAULT 5,
                 PRIMARY KEY (guild_id, mode)
             );
             CREATE TABLE IF NOT EXISTS challenges (
@@ -326,6 +337,30 @@ class EloDatabase:
                 guild_id INTEGER PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS server_settings (
+                guild_id INTEGER PRIMARY KEY,
+                maintenance INTEGER NOT NULL DEFAULT 0,
+                announcement_channel_id INTEGER,
+                dashboard_refresh_seconds INTEGER NOT NULL DEFAULT 30
+            );
+            CREATE TABLE IF NOT EXISTS player_profiles (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                gamertag TEXT NOT NULL DEFAULT '',
+                aliases TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS announcement_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                metric TEXT NOT NULL DEFAULT 'rating',
+                interval_minutes INTEGER NOT NULL,
+                next_run TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -345,6 +380,16 @@ class EloDatabase:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN current_streak INTEGER NOT NULL DEFAULT 0")
         if "best_streak" not in rating_columns:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN best_streak INTEGER NOT NULL DEFAULT 0")
+        if "provisional_games" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN provisional_games INTEGER NOT NULL DEFAULT 0")
+        if "peak_rating" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN peak_rating INTEGER NOT NULL DEFAULT 1000")
+        settings_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(elo_settings)")}
+        if "rating_floor" not in settings_columns:
+            self.connection.execute("ALTER TABLE elo_settings ADD COLUMN rating_floor INTEGER NOT NULL DEFAULT 0")
+        if "provisional_games" not in settings_columns:
+            self.connection.execute("ALTER TABLE elo_settings ADD COLUMN provisional_games INTEGER NOT NULL DEFAULT 5")
+        self.connection.execute("PRAGMA user_version = 2")
         self.connection.commit()
 
     def close(self):
@@ -358,12 +403,86 @@ class EloDatabase:
         return row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
 
     def elo_settings(self, guild_id: int, mode: str):
-        row = self.connection.execute("SELECT starting_rating, k_factor FROM elo_settings WHERE guild_id=? AND mode=?", (guild_id, mode)).fetchone()
-        return row or {"starting_rating": DEFAULT_RATING, "k_factor": DEFAULT_K_FACTOR}
+        row = self.connection.execute("SELECT starting_rating, k_factor, rating_floor, provisional_games FROM elo_settings WHERE guild_id=? AND mode=?", (guild_id, mode)).fetchone()
+        return row or {"starting_rating": DEFAULT_RATING, "k_factor": DEFAULT_K_FACTOR, "rating_floor": 0, "provisional_games": 5}
 
-    def set_elo_settings(self, guild_id: int, mode: str, starting_rating: int, k_factor: int):
-        self.connection.execute("INSERT INTO elo_settings (guild_id, mode, starting_rating, k_factor) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, mode) DO UPDATE SET starting_rating=excluded.starting_rating, k_factor=excluded.k_factor", (guild_id, mode, starting_rating, k_factor))
+    def set_elo_settings(self, guild_id: int, mode: str, starting_rating: int, k_factor: int, rating_floor: int | None = None, provisional_games: int | None = None):
+        current = self.elo_settings(guild_id, mode)
+        floor = current["rating_floor"] if rating_floor is None else rating_floor
+        provisional = current["provisional_games"] if provisional_games is None else provisional_games
+        self.connection.execute("INSERT INTO elo_settings (guild_id, mode, starting_rating, k_factor, rating_floor, provisional_games) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, mode) DO UPDATE SET starting_rating=excluded.starting_rating, k_factor=excluded.k_factor, rating_floor=excluded.rating_floor, provisional_games=excluded.provisional_games", (guild_id, mode, starting_rating, k_factor, floor, provisional))
         self.connection.commit()
+
+    def server_settings(self, guild_id: int):
+        row = self.connection.execute("SELECT * FROM server_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        if row:
+            return row
+        self.connection.execute("INSERT INTO server_settings (guild_id) VALUES (?)", (guild_id,))
+        self.connection.commit()
+        return self.connection.execute("SELECT * FROM server_settings WHERE guild_id=?", (guild_id,)).fetchone()
+
+    def set_maintenance(self, guild_id: int, enabled: bool):
+        self.server_settings(guild_id)
+        self.connection.execute("UPDATE server_settings SET maintenance=? WHERE guild_id=?", (int(enabled), guild_id))
+        self.connection.commit()
+
+    def set_announcement_channel(self, guild_id: int, channel_id: int):
+        self.server_settings(guild_id)
+        self.connection.execute("UPDATE server_settings SET announcement_channel_id=? WHERE guild_id=?", (channel_id, guild_id))
+        self.connection.commit()
+
+    def set_dashboard_refresh(self, guild_id: int, seconds: int):
+        self.server_settings(guild_id)
+        self.connection.execute("UPDATE server_settings SET dashboard_refresh_seconds=? WHERE guild_id=?", (seconds, guild_id))
+        self.connection.commit()
+
+    def set_profile(self, guild_id: int, user_id: int, gamertag: str, aliases: list[str]):
+        self.connection.execute(
+            "INSERT INTO player_profiles (guild_id,user_id,gamertag,aliases) VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET gamertag=excluded.gamertag, aliases=excluded.aliases",
+            (guild_id, user_id, gamertag.strip()[:50], json.dumps(aliases[:20])),
+        )
+        self.connection.commit()
+
+    def profile(self, guild_id: int, user_id: int):
+        return self.connection.execute("SELECT * FROM player_profiles WHERE guild_id=? AND user_id=?", (guild_id, user_id)).fetchone()
+
+    def schedule_announcement(self, guild_id: int, channel_id: int, mode: str, metric: str, interval_minutes: int, created_by: int):
+        next_run = (datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)).isoformat()
+        cursor = self.connection.execute(
+            "INSERT INTO announcement_schedules (guild_id,channel_id,mode,metric,interval_minutes,next_run,created_by) VALUES (?,?,?,?,?,?,?)",
+            (guild_id, channel_id, mode, metric, interval_minutes, next_run, created_by),
+        )
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def due_announcements(self):
+        return self.connection.execute("SELECT * FROM announcement_schedules WHERE enabled=1 AND next_run<=?", (datetime.now(timezone.utc).isoformat(),)).fetchall()
+
+    def advance_announcement(self, schedule_id: int, interval_minutes: int):
+        next_run = (datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)).isoformat()
+        self.connection.execute("UPDATE announcement_schedules SET next_run=? WHERE id=?", (next_run, schedule_id))
+        self.connection.commit()
+
+    def delete_announcement(self, guild_id: int, schedule_id: int):
+        deleted = self.connection.execute("DELETE FROM announcement_schedules WHERE guild_id=? AND id=?", (guild_id, schedule_id)).rowcount
+        self.connection.commit()
+        return deleted
+
+    def team_history(self, guild_id: int, mode: str, player_ids: list[int]):
+        return self.connection.execute(
+            "SELECT * FROM team_performance WHERE guild_id=? AND mode=? AND team_key=?",
+            (guild_id, mode, team_key(player_ids)),
+        ).fetchone()
+
+    def replay_gallery(self, guild_id: int, mode: str | None = None, limit: int = 15):
+        sql = "SELECT m.id,m.mode,m.map_name,m.created_at,a.replay_url,a.note FROM matches m JOIN match_annotations a ON a.match_id=m.id WHERE m.guild_id=? AND a.replay_url<>''"
+        params: list[object] = [guild_id]
+        if mode:
+            sql += " AND m.mode=?"
+            params.append(mode)
+        sql += " ORDER BY m.id DESC LIMIT ?"
+        params.append(max(1, min(limit, 50)))
+        return self.connection.execute(sql, params).fetchall()
 
     def active_season(self, guild_id: int):
         return self.connection.execute("SELECT * FROM seasons WHERE guild_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (guild_id,)).fetchone()
@@ -690,7 +809,8 @@ class EloDatabase:
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
         rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
-        changes = calculate_match_changes(mode, rated_one, rated_two, winner, self.elo_settings(guild_id, mode)["k_factor"])
+        settings = self.elo_settings(guild_id, mode)
+        changes = calculate_match_changes(mode, rated_one, rated_two, winner, settings["k_factor"])
         season = self.active_season(guild_id)
         cursor = self.connection.execute(
             "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id, map_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -698,9 +818,11 @@ class EloDatabase:
         )
         match_id = cursor.lastrowid
         for user_id, values in stats.items():
+            change = next(change for change in changes if change.user_id == user_id)
+            final_rating = max(settings["rating_floor"], change.new_rating)
             self.connection.execute(
                 "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score, rating_before, rating_delta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), next(change.old_rating for change in changes if change.user_id == user_id), next(change.delta for change in changes if change.user_id == user_id)),
+                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), change.old_rating, final_rating - change.old_rating),
             )
         team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
         team_one_values = self._sum_team_stats(team_one, stats)
@@ -722,15 +844,17 @@ class EloDatabase:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
             self.connection.execute(
                 """
-                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games, current_streak, best_streak)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games, current_streak, best_streak, provisional_games, peak_rating)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, user_id, mode) DO UPDATE SET
                     rating=excluded.rating, wins=wins+excluded.wins,
                     losses=losses+excluded.losses, games=games+1,
                     current_streak=CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END,
-                    best_streak=MAX(best_streak, CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END)
+                    best_streak=MAX(best_streak, CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END),
+                    provisional_games=MAX(0, provisional_games-1),
+                    peak_rating=MAX(peak_rating, excluded.rating)
                 """,
-                (guild_id, change.user_id, mode, change.new_rating, int(did_win), int(not did_win), int(did_win), int(did_win)),
+                (guild_id, change.user_id, mode, max(settings["rating_floor"], change.new_rating), int(did_win), int(not did_win), int(did_win), int(did_win), max(0, settings["provisional_games"] - 1), max(settings["rating_floor"], change.new_rating)),
             )
         self.connection.commit()
         return changes
@@ -1071,19 +1195,22 @@ async def modes(interaction: discord.Interaction):
 @app_commands.choices(mode=mode_choices)
 async def settings(interaction: discord.Interaction, mode: app_commands.Choice[str]):
     row = bot.database.elo_settings(interaction.guild_id, mode.value)
-    await interaction.response.send_message(f"**{mode_label(mode.value)} Elo settings**\nStarting rating: **{row['starting_rating']}**\nK-factor: **{row['k_factor']}**")
+    await interaction.response.send_message(f"**{mode_label(mode.value)} Elo settings**\nStarting rating: **{row['starting_rating']}**\nK-factor: **{row['k_factor']}**\nRating floor: **{row['rating_floor']}**\nProvisional games: **{row['provisional_games']}**")
 
 
 @bot.tree.command(name="setelo", description="Set starting rating and K-factor for a mode")
-@app_commands.describe(mode="Game mode", starting_rating="Starting rating for new players", k_factor="How quickly ratings move")
+@app_commands.describe(mode="Game mode", starting_rating="Starting rating for new players", k_factor="How quickly ratings move", rating_floor="Lowest allowed rating", provisional_games="Games before a rating is established")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_guild=True)
-async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str], starting_rating: int, k_factor: int):
+async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str], starting_rating: int, k_factor: int, rating_floor: int = 0, provisional_games: int = 5):
     if not 100 <= starting_rating <= 5000 or not 1 <= k_factor <= 100:
         await interaction.response.send_message("Starting rating must be 100–5000 and K-factor must be 1–100.", ephemeral=True)
         return
-    bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor)
-    await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**.")
+    if not 0 <= rating_floor <= starting_rating or not 0 <= provisional_games <= 50:
+        await interaction.response.send_message("Rating floor must be between 0 and the starting rating; provisional games must be 0–50.", ephemeral=True)
+        return
+    bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor, rating_floor, provisional_games)
+    await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**, floor **{rating_floor}**, provisional games **{provisional_games}**.")
 
 
 @bot.tree.command(name="roles_setup", description="Create Elo tier roles for a mode")
@@ -1266,7 +1393,12 @@ async def season_end(interaction: discord.Interaction):
     except ValueError as error:
         await interaction.response.send_message(str(error), ephemeral=True)
         return
-    await interaction.response.send_message(f"Ended **{ended['name']}**. Start another season with `/season_start` when ready.")
+    message = f"Ended **{ended['name']}**. Start another season with `/season_start` when ready."
+    await interaction.response.send_message(message)
+    setting = bot.database.server_settings(interaction.guild_id)
+    channel = bot.get_channel(setting["announcement_channel_id"]) if setting["announcement_channel_id"] else None
+    if channel and channel.id != interaction.channel_id:
+        await channel.send(f"🏁 Season **{ended['name']}** has ended. Final standings remain available in the dashboard.")
 
 
 @bot.tree.command(name="season_reset", description="Reset current ratings for a fresh season")
@@ -1355,7 +1487,15 @@ async def player_search(interaction: discord.Interaction, query: str):
     if not interaction.guild:
         await interaction.response.send_message("Use this inside a server.", ephemeral=True)
         return
-    matches = [member for member in interaction.guild.members if query.lower() in f"{member.display_name} {member.name}".lower()][:15]
+    matches = []
+    needle = query.lower()
+    for member in interaction.guild.members:
+        profile = bot.database.profile(interaction.guild_id, member.id)
+        aliases = " ".join(json.loads(profile["aliases"])) if profile else ""
+        gamertag = profile["gamertag"] if profile else ""
+        if needle in f"{member.display_name} {member.name} {gamertag} {aliases}".lower():
+            matches.append(member)
+    matches = matches[:15]
     if not matches:
         await interaction.response.send_message("No matching players found.")
         return
@@ -1497,6 +1637,9 @@ async def match_cancel(interaction: discord.Interaction, match_id: int):
 async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, map_name: str | None = None):
     if not has_command_access(interaction, "match"):
         await interaction.response.send_message("You do not have the role required to submit matches.", ephemeral=True)
+        return
+    if bot.database.server_settings(interaction.guild_id)["maintenance"] and not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("Match submissions are temporarily paused by an administrator.", ephemeral=True)
         return
     try:
         size = team_size(mode.value)
@@ -2497,13 +2640,103 @@ async def dashboard_share(interaction: discord.Interaction):
     await interaction.response.send_message(f"Read-only dashboard link: `http://<this-PC-IP>:{port}/share/{token}`", ephemeral=True)
 
 
+@bot.tree.command(name="profile_set", description="Set your Xbox gamertag and searchable aliases")
+@app_commands.describe(gamertag="Your Xbox gamertag", aliases="Optional comma-separated old or alternate names")
+async def profile_set(interaction: discord.Interaction, gamertag: str, aliases: str = ""):
+    alias_list = [value.strip() for value in aliases.split(",") if value.strip() and value.strip().lower() != gamertag.strip().lower()]
+    bot.database.set_profile(interaction.guild_id, interaction.user.id, gamertag, alias_list)
+    await interaction.response.send_message(f"Saved your gamertag as **{gamertag.strip()}**" + (f" with aliases: {', '.join(alias_list)}." if alias_list else "."), ephemeral=True)
+
+
+@bot.tree.command(name="teamhistory", description="Show the record and totals for an exact recurring team")
+@app_commands.describe(mode="Game mode", team="Comma-separated mentions or IDs for the team")
+@app_commands.choices(mode=mode_choices)
+async def teamhistory(interaction: discord.Interaction, mode: app_commands.Choice[str], team: str):
+    try:
+        players = parse_team(team, team_size(mode.value))
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    row = bot.database.team_history(interaction.guild_id, mode.value, players)
+    if not row:
+        await interaction.response.send_message("No history exists for that exact team yet.")
+        return
+    roster = " + ".join(f"<@{player_id}>" for player_id in players)
+    await interaction.response.send_message(f"**{mode_label(mode.value)} team history**\n{roster}\nRecord: **{row['wins']}-{row['losses']}** across **{row['games']}** games\nStats: " + " · ".join(f"{name.title()}: **{row[name]}**" for name in stat_names(mode.value)))
+
+
+@bot.tree.command(name="clips", description="Show the latest match replay and clip links")
+@app_commands.describe(mode="Optional game mode", limit="Number of clips to show")
+@app_commands.choices(mode=mode_choices)
+async def clips(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 10):
+    rows = bot.database.replay_gallery(interaction.guild_id, mode.value if mode else None, limit)
+    if not rows:
+        await interaction.response.send_message("No replay or clip links have been attached yet.")
+        return
+    lines = [f"**Match #{row['id']} — {mode_label(row['mode'])} — {row['map_name']}**\n{row['replay_url']}" + (f"\n_{row['note']}_" if row['note'] else "") for row in rows]
+    await interaction.response.send_message("**Match clip gallery**\n" + "\n\n".join(lines))
+
+
+@bot.tree.command(name="announcement_channel", description="Set the channel for scheduled leaderboard announcements")
+@app_commands.describe(channel="Announcement channel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def announcement_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    bot.database.set_announcement_channel(interaction.guild_id, channel.id)
+    await interaction.response.send_message(f"Leaderboard announcements will use {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="announcement_schedule", description="Schedule recurring leaderboard announcements")
+@app_commands.describe(mode="Game mode", interval_minutes="Minutes between announcements", metric="Ranking metric", channel="Optional destination channel")
+@app_commands.choices(mode=mode_choices)
+@app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def announcement_schedule(interaction: discord.Interaction, mode: app_commands.Choice[str], interval_minutes: int, metric: app_commands.Choice[str] | None = None, channel: discord.TextChannel | None = None):
+    if not 15 <= interval_minutes <= 10080:
+        await interaction.response.send_message("Interval must be between 15 minutes and 7 days.", ephemeral=True)
+        return
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message("Choose a text channel.", ephemeral=True)
+        return
+    schedule_id = bot.database.schedule_announcement(interaction.guild_id, target.id, mode.value, metric.value if metric else "rating", interval_minutes, interaction.user.id)
+    await interaction.response.send_message(f"Created announcement schedule **#{schedule_id}** in {target.mention} every **{interval_minutes} minutes**.", ephemeral=True)
+
+
+@bot.tree.command(name="announcement_cancel", description="Cancel a scheduled leaderboard announcement")
+@app_commands.describe(schedule_id="Announcement schedule number")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def announcement_cancel(interaction: discord.Interaction, schedule_id: int):
+    if not bot.database.delete_announcement(interaction.guild_id, schedule_id):
+        await interaction.response.send_message("That announcement schedule was not found.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"Cancelled announcement schedule **#{schedule_id}**.", ephemeral=True)
+
+
+@bot.tree.command(name="maintenance", description="Pause or resume match submissions")
+@app_commands.describe(enabled="Whether to pause non-admin match submissions")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def maintenance(interaction: discord.Interaction, enabled: bool):
+    bot.database.set_maintenance(interaction.guild_id, enabled)
+    await interaction.response.send_message(f"Match submission maintenance mode is now **{'ON' if enabled else 'OFF'}**.", ephemeral=True)
+
+
 @bot.tree.command(name="help_menu", description="Show commands grouped by use")
 async def help_menu(interaction: discord.Interaction):
     embed = discord.Embed(title="Gears 5 Elo commands", colour=discord.Colour.red())
-    embed.add_field(name="Matches", value="`/match` `/match_confirm` `/match_vote` `/rematch` `/forfeit` `/remake`", inline=False)
-    embed.add_field(name="Teams", value="`/balance` `/random_teams` `/draft_start` `/queue_join` `/teamleaderboard`", inline=False)
-    embed.add_field(name="Stats", value="`/leaderboard` `/stats` `/profile` `/trend` `/predict` `/awards` `/history`", inline=False)
-    embed.add_field(name="Admin", value="`/setelo` `/season_reset` `/backup_now` `/integrity` `/permission_set`", inline=False)
+    names = sorted(command.name for command in bot.tree.get_commands())
+    lines = [f"`/{name}`" for name in names]
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) + 1 > 950:
+            chunks.append(current)
+            current = ""
+        current += (" " if current else "") + line
+    if current:
+        chunks.append(current)
+    for index, chunk in enumerate(chunks, 1):
+        embed.add_field(name=f"Commands {index}/{len(chunks)}", value=chunk, inline=False)
+    embed.set_footer(text="Use Discord's command search for descriptions and options.")
     await interaction.response.send_message(embed=embed)
 
 
@@ -2525,11 +2758,26 @@ async def scheduled_reminders():
         bot.database.mark_schedule_notified(row["id"])
 
 
+@tasks.loop(minutes=1)
+async def scheduled_announcements():
+    for row in bot.database.due_announcements():
+        channel = bot.get_channel(row["channel_id"])
+        if channel:
+            rows = bot.database.leaderboard(row["guild_id"], row["mode"], row["metric"], 10)
+            if rows:
+                metric = row["metric"]
+                values = "\n".join(f"**{index}.** <@{item['user_id']}> — {item['rating']} Elo · {item['wins']}-{item['losses']}" for index, item in enumerate(rows, 1))
+                await channel.send(f"📊 **{mode_label(row['mode'])} leaderboard** — sorted by **{metric}**\n{values}")
+        bot.database.advance_announcement(row["id"], row["interval_minutes"])
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}.")
     if not scheduled_reminders.is_running():
         scheduled_reminders.start()
+    if not scheduled_announcements.is_running():
+        scheduled_announcements.start()
     if not automatic_backup.is_running():
         automatic_backup.start()
     if not temporary_channel_cleanup.is_running():
