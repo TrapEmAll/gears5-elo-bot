@@ -38,6 +38,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season_start` — admin-only: start a named season.
 - `/season_end` — admin-only: end the active season.
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
+- `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
+- `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
 - `/settings` — show Elo settings for a mode.
 - `/setelo` — admin-only: set starting rating and K-factor for a mode.
 - `/roles_setup` — admin-only: create Bronze, Silver, Gold, Onyx, and Master roles for a mode; the bot assigns them after matches.

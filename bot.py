@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 from io import BytesIO
 from datetime import datetime, timezone
@@ -139,6 +140,26 @@ class EloDatabase:
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS captains (
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, mode, team)
+            );
+            CREATE TABLE IF NOT EXISTS pending_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                winner INTEGER NOT NULL,
+                team_one TEXT NOT NULL,
+                team_two TEXT NOT NULL,
+                stats_json TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                map_name TEXT NOT NULL DEFAULT 'Unknown',
+                confirmed_by TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -208,6 +229,36 @@ class EloDatabase:
 
     def challenge(self, guild_id: int, challenge_id: int):
         return self.connection.execute("SELECT * FROM challenges WHERE guild_id=? AND id=?", (guild_id, challenge_id)).fetchone()
+
+    def set_captain(self, guild_id: int, mode: str, team: int, user_id: int):
+        self.connection.execute("INSERT INTO captains (guild_id, mode, team, user_id) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, mode, team) DO UPDATE SET user_id=excluded.user_id", (guild_id, mode, team, user_id))
+        self.connection.commit()
+
+    def captain(self, guild_id: int, mode: str, team: int):
+        row = self.connection.execute("SELECT user_id FROM captains WHERE guild_id=? AND mode=? AND team=?", (guild_id, mode, team)).fetchone()
+        return row["user_id"] if row else None
+
+    def create_pending_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str):
+        cursor = self.connection.execute("INSERT INTO pending_matches (guild_id, mode, winner, team_one, team_two, stats_json, created_by, map_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), json.dumps(stats), created_by, map_name))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def pending_match(self, guild_id: int, pending_id: int):
+        return self.connection.execute("SELECT * FROM pending_matches WHERE guild_id=? AND id=?", (guild_id, pending_id)).fetchone()
+
+    def confirm_pending_match(self, guild_id: int, pending_id: int, user_id: int):
+        row = self.pending_match(guild_id, pending_id)
+        if not row:
+            return None
+        confirmed = set(json.loads(row["confirmed_by"]))
+        confirmed.add(user_id)
+        self.connection.execute("UPDATE pending_matches SET confirmed_by=? WHERE guild_id=? AND id=?", (json.dumps(sorted(confirmed)), guild_id, pending_id))
+        self.connection.commit()
+        return self.pending_match(guild_id, pending_id)
+
+    def delete_pending_match(self, guild_id: int, pending_id: int):
+        self.connection.execute("DELETE FROM pending_matches WHERE guild_id=? AND id=?", (guild_id, pending_id))
+        self.connection.commit()
 
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
@@ -522,21 +573,11 @@ class PlayerStatsModal(discord.ui.Modal):
             return
 
         try:
-            changes = bot.database.record_match(interaction.guild_id, self.mode, self.winner, self.team_one, self.team_two, self.stats, interaction.user.id, self.map_name)
+            pending_id = bot.database.create_pending_match(interaction.guild_id, self.mode, self.winner, self.team_one, self.team_two, self.stats, interaction.user.id, self.map_name)
         except sqlite3.Error as error:
-            await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
+            await interaction.response.send_message(f"Could not save match for confirmation: {error}", ephemeral=True)
             return
-        change_text = " · ".join(f"<@{change.user_id}> {change.new_rating} ({change.delta:+d})" for change in changes)
-        mvp_id, mvp_stats = max(self.stats.items(), key=lambda item: (item[1].get("score", 0), item[1].get("kills", 0), item[1].get("damage", 0)))
-        team_one_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_one)
-        team_two_score = sum(self.stats[player_id].get("score", 0) for player_id in self.team_two)
-        role_updates = 0
-        if interaction.guild:
-            for change in changes:
-                if await update_elo_role(interaction.guild, change.user_id, self.mode, change.new_rating):
-                    role_updates += 1
-        role_text = f" Tier roles updated for {role_updates} players." if role_updates else ""
-        await interaction.response.send_message(f"**{mode_label(self.mode)} recorded** — Team {self.winner} wins\n🏅 MVP: <@{mvp_id}> ({mvp_stats.get('score', 0)} score, {mvp_stats.get('kills', 0)} kills)\n📊 Team scores: **{team_one_score}** — **{team_two_score}**\n{change_text}\nStats saved for {len(self.stats)} players.{role_text}")
+        await interaction.response.send_message(f"📝 Match **#{pending_id}** is ready for confirmation. One player from each team must use `/match_confirm match_id:{pending_id}`. Use `/match_cancel match_id:{pending_id}` to discard it.")
 
 
 @bot.tree.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
@@ -720,6 +761,63 @@ async def challenge_decline(interaction: discord.Interaction, challenge_id: int)
         return
     bot.database.update_challenge(interaction.guild_id, challenge_id, interaction.user.id, "declined")
     await interaction.response.send_message(f"Challenge **#{challenge_id}** declined.")
+
+
+@bot.tree.command(name="captain_set", description="Set the captain for one side of a mode")
+@app_commands.describe(mode="Game mode", team="Team side", captain="Player who can confirm for this side")
+@app_commands.choices(mode=mode_choices, team=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def captain_set(interaction: discord.Interaction, mode: app_commands.Choice[str], team: app_commands.Choice[str], captain: discord.Member):
+    bot.database.set_captain(interaction.guild_id, mode.value, int(team.value), captain.id)
+    await interaction.response.send_message(f"Set {captain.mention} as Team {team.value} captain for **{mode_label(mode.value)}**.")
+
+
+@bot.tree.command(name="match_confirm", description="Confirm a pending match result")
+@app_commands.describe(match_id="Pending match number")
+async def match_confirm(interaction: discord.Interaction, match_id: int):
+    row = bot.database.pending_match(interaction.guild_id, match_id)
+    if not row:
+        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        return
+    team_one = [int(value) for value in row["team_one"].split(",")]
+    team_two = [int(value) for value in row["team_two"].split(",")]
+    team = 1 if interaction.user.id in team_one else 2 if interaction.user.id in team_two else 0
+    if not team:
+        await interaction.response.send_message("Only players in this match can confirm it.", ephemeral=True)
+        return
+    assigned_captain = bot.database.captain(interaction.guild_id, row["mode"], team)
+    if assigned_captain and assigned_captain != interaction.user.id:
+        await interaction.response.send_message(f"Only the assigned Team {team} captain can confirm this result.", ephemeral=True)
+        return
+    confirmed = set(json.loads(row["confirmed_by"]))
+    if interaction.user.id in confirmed:
+        await interaction.response.send_message("You already confirmed this match.", ephemeral=True)
+        return
+    row = bot.database.confirm_pending_match(interaction.guild_id, match_id, interaction.user.id)
+    confirmed = set(json.loads(row["confirmed_by"]))
+    confirmed_teams = {1 if user_id in team_one else 2 for user_id in confirmed}
+    if confirmed_teams != {1, 2}:
+        await interaction.response.send_message(f"Confirmation saved ({len(confirmed_teams)}/2 teams). A player from the other team still needs to confirm.")
+        return
+    stats = {int(user_id): values for user_id, values in json.loads(row["stats_json"]).items()}
+    changes = bot.database.record_match(interaction.guild_id, row["mode"], row["winner"], team_one, team_two, stats, row["created_by"], row["map_name"])
+    bot.database.delete_pending_match(interaction.guild_id, match_id)
+    change_text = " · ".join(f"<@{change.user_id}> {change.new_rating} ({change.delta:+d})" for change in changes)
+    if interaction.guild:
+        for change in changes:
+            await update_elo_role(interaction.guild, change.user_id, row["mode"], change.new_rating)
+    await interaction.response.send_message(f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
+
+
+@bot.tree.command(name="match_cancel", description="Discard a pending match result")
+@app_commands.describe(match_id="Pending match number")
+async def match_cancel(interaction: discord.Interaction, match_id: int):
+    row = bot.database.pending_match(interaction.guild_id, match_id)
+    if not row or interaction.user.id != row["created_by"]:
+        await interaction.response.send_message("Only the match submitter can cancel that pending result.", ephemeral=True)
+        return
+    bot.database.delete_pending_match(interaction.guild_id, match_id)
+    await interaction.response.send_message(f"Discarded pending match **#{match_id}**.")
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")
