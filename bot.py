@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import json
 import random
 import secrets
 import shutil
 import sqlite3
+import urllib.request
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1002,6 +1004,18 @@ async def update_elo_role(guild: discord.Guild, user_id: int, mode: str, rating:
     return True
 
 
+async def notify_webhook(guild_id: int, content: str):
+    setting = bot.database.webhook(guild_id)
+    if not setting:
+        return
+    payload = json.dumps({"content": content}).encode("utf-8")
+    request = urllib.request.Request(setting["webhook_url"], data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        await asyncio.to_thread(urllib.request.urlopen, request, timeout=10)
+    except (OSError, ValueError):
+        return
+
+
 class PlayerStatsModal(discord.ui.Modal):
     def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str):
         self.mode = mode
@@ -1458,6 +1472,7 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
     if interaction.guild:
         for change in changes:
             await update_elo_role(interaction.guild, change.user_id, row["mode"], change.new_rating)
+    await notify_webhook(interaction.guild_id, f"{mode_label(row['mode'])} match recorded: Team {row['winner']} won (match #{match_id}).")
     await interaction.response.send_message(f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
 
 
@@ -2366,7 +2381,12 @@ async def close_games(interaction: discord.Interaction, mode: app_commands.Choic
     if not history:
         await interaction.response.send_message("No matches recorded for that mode.")
         return
-    lines = [f"Match #{row['id']} — Team {row['winner']} won · {row['map_name']}" for row in history]
+    scored = []
+    for row in history:
+        first_score = bot.database.connection.execute("SELECT COALESCE(SUM(score), 0) FROM match_player_stats WHERE match_id=? AND user_id IN (SELECT value FROM json_each(?))", (row["id"], "[" + row["team_one"].replace(",", ",") + "]")).fetchone()[0]
+        all_score = bot.database.connection.execute("SELECT COALESCE(SUM(score), 0) FROM match_player_stats WHERE match_id=?", (row["id"],)).fetchone()[0]
+        scored.append((abs(first_score - (all_score - first_score)), row))
+    lines = [f"Match #{row['id']} — score margin **{margin}** · Team {row['winner']} won · {row['map_name']}" for margin, row in sorted(scored, key=lambda item: item[0])]
     await interaction.response.send_message(f"**Closest recent games — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
