@@ -1225,7 +1225,7 @@ class PlayerStatsModal(discord.ui.Modal):
         except sqlite3.Error as error:
             await interaction.response.send_message(f"Could not save match for confirmation: {error}", ephemeral=True)
             return
-        await interaction.response.send_message(f"📝 Match **#{pending_id}** is ready for confirmation. One player from each team must use `/match_confirm match_id:{pending_id}`. Use `/match_cancel match_id:{pending_id}` to discard it.")
+        await interaction.response.send_message(f"📝 Match **#{pending_id}** is ready for confirmation. One player from each team must use `/match confirm match_id:{pending_id}`. Use `/match cancel match_id:{pending_id}` to discard it.")
 
 
 class NextPlayerStatsView(discord.ui.View):
@@ -1670,6 +1670,12 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
     if confirmed_teams != {1, 2}:
         await interaction.response.send_message(f"Confirmation saved ({len(confirmed_teams)}/2 teams). A player from the other team still needs to confirm.")
         return
+    await finalize_pending_match(interaction, row, team_one, team_two)
+
+
+async def finalize_pending_match(interaction: discord.Interaction, row: sqlite3.Row, team_one: list[int], team_two: list[int]):
+    """Record a pending result after normal or administrator approval."""
+    match_id = row["id"]
     stats = {int(user_id): values for user_id, values in json.loads(row["stats_json"]).items()}
     changes = bot.database.record_match(interaction.guild_id, row["mode"], row["winner"], team_one, team_two, stats, row["created_by"], row["map_name"])
     bot.database.delete_pending_match(interaction.guild_id, match_id)
@@ -1680,6 +1686,19 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
             await update_elo_role(interaction.guild, change.user_id, row["mode"], change.new_rating)
     await notify_webhook(interaction.guild_id, f"{mode_label(row['mode'])} match recorded: Team {row['winner']} won (match #{match_id}).")
     await interaction.response.send_message(f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
+
+
+@match_group.command(name="force_confirm", description="Admin: record a pending match without waiting for both confirmations")
+@app_commands.describe(match_id="Pending match number")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def match_force_confirm(interaction: discord.Interaction, match_id: int):
+    row = bot.database.pending_match(interaction.guild_id, match_id)
+    if not row:
+        await interaction.response.send_message("That pending match was not found.", ephemeral=True)
+        return
+    team_one = [int(value) for value in row["team_one"].split(",")]
+    team_two = [int(value) for value in row["team_two"].split(",")]
+    await finalize_pending_match(interaction, row, team_one, team_two)
 
 
 @match_group.command(name="cancel", description="Discard a pending match result")
@@ -1787,7 +1806,7 @@ async def match_vote(interaction: discord.Interaction, match_id: int, decision: 
         return
     updated = bot.database.confirm_pending_match(interaction.guild_id, match_id, interaction.user.id)
     confirmed = json.loads(updated["confirmed_by"])
-    await interaction.response.send_message(f"Approval recorded for match **#{match_id}** ({len(confirmed)} confirmation(s)). Use `/match_confirm match_id:{match_id}` when both sides have approved.")
+    await interaction.response.send_message(f"Approval recorded for match **#{match_id}** ({len(confirmed)} confirmation(s)). Use `/match confirm match_id:{match_id}` when both sides have approved.")
 
 
 @admin_group.command(name="note_add", description="Add an admin note to a player")
@@ -1983,7 +2002,7 @@ async def forfeit(interaction: discord.Interaction, mode: app_commands.Choice[st
         return
     stats = {player_id: {name: 0 for name in stat_names(mode.value)} for player_id in first + second}
     pending_id = bot.database.create_pending_match(interaction.guild_id, mode.value, int(winner.value), first, second, stats, interaction.user.id, "Forfeit")
-    await interaction.response.send_message(f"Forfeit match **#{pending_id}** submitted. Both sides must confirm with `/match_confirm match_id:{pending_id}`.")
+    await interaction.response.send_message(f"Forfeit match **#{pending_id}** submitted. Both sides must confirm with `/match confirm match_id:{pending_id}`.")
 
 
 @match_group.command(name="dispute_resolve", description="Resolve a pending match dispute")

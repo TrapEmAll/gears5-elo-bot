@@ -34,7 +34,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 
 ## Commands
 
-- `/match record` — record a match and enter each player's stats one at a time.
+- `/match record` — record a match and enter each player's stats one at a time; `/match confirm` confirms a pending match, and `/match force_confirm` lets a server manager record one without waiting for both teams.
 - `/match confirm`, `/match cancel`, `/match vote`, `/match edit`, `/match attach`, `/match rematch`, `/match forfeit`, `/match remake` — review and manage results.
 - `/stats leaderboard`, `/stats rating`, `/stats trend`, `/stats player`, `/stats history`, `/stats streaks`, `/stats predict`, `/stats awards`, `/stats elo_history`, `/stats confidence`, `/stats teamleaderboard`, `/stats teamstats`, `/stats close_games`, `/stats comebacks` — view rankings and analytics.
 - `/player profile`, `/player profile_set`, `/player search`, `/player opponents`, `/player rivalry`, `/player recent_form`, `/player consistency`, `/player personal_bests`, `/player compare`, `/player myhistory` — view player records and profiles.
