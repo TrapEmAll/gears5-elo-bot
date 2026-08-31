@@ -37,6 +37,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/season` — show the active season.
 - `/season_start` — admin-only: start a named season.
 - `/season_end` — admin-only: end the active season.
+- `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/settings` — show Elo settings for a mode.
 - `/setelo` — admin-only: set starting rating and K-factor for a mode.
 - `/balance` — build balanced teams from a lobby’s player list.

@@ -122,6 +122,15 @@ class EloDatabase:
                 k_factor INTEGER NOT NULL DEFAULT 32,
                 PRIMARY KEY (guild_id, mode)
             );
+            CREATE TABLE IF NOT EXISTS challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                challenger_id INTEGER NOT NULL,
+                opponent_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -178,6 +187,19 @@ class EloDatabase:
         self.connection.execute("UPDATE seasons SET ended_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), season["id"]))
         self.connection.commit()
         return season
+
+    def create_challenge(self, guild_id: int, mode: str, challenger_id: int, opponent_id: int):
+        cursor = self.connection.execute("INSERT INTO challenges (guild_id, mode, challenger_id, opponent_id) VALUES (?, ?, ?, ?)", (guild_id, mode, challenger_id, opponent_id))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def update_challenge(self, guild_id: int, challenge_id: int, opponent_id: int, status: str):
+        result = self.connection.execute("UPDATE challenges SET status=? WHERE id=? AND guild_id=? AND opponent_id=? AND status='pending'", (status, challenge_id, guild_id, opponent_id))
+        self.connection.commit()
+        return result.rowcount
+
+    def challenge(self, guild_id: int, challenge_id: int):
+        return self.connection.execute("SELECT * FROM challenges WHERE guild_id=? AND id=?", (guild_id, challenge_id)).fetchone()
 
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
@@ -574,6 +596,41 @@ async def season_end(interaction: discord.Interaction):
         await interaction.response.send_message(str(error), ephemeral=True)
         return
     await interaction.response.send_message(f"Ended **{ended['name']}**. Start another season with `/season_start` when ready.")
+
+
+@bot.tree.command(name="challenge", description="Challenge another player to a 1v1 match")
+@app_commands.describe(mode="1v1 game mode", opponent="Player to challenge")
+@app_commands.choices(mode=[choice for choice in mode_choices if team_size(choice.value) == 1])
+async def challenge(interaction: discord.Interaction, mode: app_commands.Choice[str], opponent: discord.Member):
+    if opponent.id == interaction.user.id or opponent.bot:
+        await interaction.response.send_message("Choose another human player.", ephemeral=True)
+        return
+    challenge_id = bot.database.create_challenge(interaction.guild_id, mode.value, interaction.user.id, opponent.id)
+    await interaction.response.send_message(f"⚔️ <@{interaction.user.id}> challenged <@{opponent.id}> to **{mode_label(mode.value)}** (challenge **#{challenge_id}**). Use `/challenge_accept challenge_id:{challenge_id}` to accept.")
+
+
+@bot.tree.command(name="challenge_accept", description="Accept a pending challenge")
+@app_commands.describe(challenge_id="Challenge number")
+async def challenge_accept(interaction: discord.Interaction, challenge_id: int):
+    row = bot.database.challenge(interaction.guild_id, challenge_id)
+    if not row or row["opponent_id"] != interaction.user.id:
+        await interaction.response.send_message("That challenge was not found for you.", ephemeral=True)
+        return
+    if bot.database.update_challenge(interaction.guild_id, challenge_id, interaction.user.id, "accepted") == 0:
+        await interaction.response.send_message("That challenge is no longer pending.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"✅ Challenge **#{challenge_id}** accepted. Play the match, then record it with `/match`.")
+
+
+@bot.tree.command(name="challenge_decline", description="Decline a pending challenge")
+@app_commands.describe(challenge_id="Challenge number")
+async def challenge_decline(interaction: discord.Interaction, challenge_id: int):
+    row = bot.database.challenge(interaction.guild_id, challenge_id)
+    if not row or row["opponent_id"] != interaction.user.id:
+        await interaction.response.send_message("That challenge was not found for you.", ephemeral=True)
+        return
+    bot.database.update_challenge(interaction.guild_id, challenge_id, interaction.user.id, "declined")
+    await interaction.response.send_message(f"Challenge **#{challenge_id}** declined.")
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")
