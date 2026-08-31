@@ -43,13 +43,14 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/rating` — show one player's ratings across modes.
 - `/profile` — show a complete player profile with record and performance stats.
 - `/streaks` — show current and best win streak leaders for a mode.
+- `/mapstats` — show match counts and team wins by map.
 - `/stats` — show a player's totals and per-match averages for a mode.
 - `/teamstats` — show the head-to-head record and combined totals for two exact teams.
 - `/undo` — admin-only: remove the latest match so it can be corrected and re-entered.
 
 Example for a 2v2 Gnashers match:
 
-`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave`
+`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave map_name:Checkout`
 
 After submitting the match, the bot opens a small form for each player. Enter only that player's stats. Every mode requires `damage`; 1v1 Gnashers requires `kills`, `deaths`, `damage`, and `score`; 2v2 Gnashers also includes `assists`:
 

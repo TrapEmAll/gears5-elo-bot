@@ -47,7 +47,8 @@ class EloDatabase:
                 team_one TEXT NOT NULL,
                 team_two TEXT NOT NULL,
                 created_by INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                map_name TEXT NOT NULL DEFAULT 'Unknown'
             );
             CREATE TABLE IF NOT EXISTS match_player_stats (
                 match_id INTEGER NOT NULL,
@@ -109,6 +110,8 @@ class EloDatabase:
         match_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(matches)")}
         if "season_id" not in match_columns:
             self.connection.execute("ALTER TABLE matches ADD COLUMN season_id INTEGER")
+        if "map_name" not in match_columns:
+            self.connection.execute("ALTER TABLE matches ADD COLUMN map_name TEXT NOT NULL DEFAULT 'Unknown'")
         rating_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(ratings)")}
         if "current_streak" not in rating_columns:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN current_streak INTEGER NOT NULL DEFAULT 0")
@@ -144,14 +147,14 @@ class EloDatabase:
         self.connection.commit()
         return season
 
-    def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int):
+    def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
         rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
         changes = calculate_match_changes(mode, rated_one, rated_two, winner)
         season = self.active_season(guild_id)
         cursor = self.connection.execute(
-            "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by, season["id"] if season else None),
+            "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id, map_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, mode, winner, ",".join(map(str, team_one)), ",".join(map(str, team_two)), created_by, season["id"] if season else None, (map_name or "Unknown").strip()[:100]),
         )
         match_id = cursor.lastrowid
         for user_id, values in stats.items():
@@ -270,6 +273,12 @@ class EloDatabase:
             (guild_id, mode, limit),
         ).fetchall()
 
+    def map_stats(self, guild_id: int, mode: str):
+        return self.connection.execute(
+            "SELECT map_name, COUNT(*) AS games, SUM(winner=1) AS team_one_wins, SUM(winner=2) AS team_two_wins FROM matches WHERE guild_id=? AND mode=? GROUP BY map_name ORDER BY games DESC, map_name",
+            (guild_id, mode),
+        ).fetchall()
+
     def player_stats(self, guild_id: int, user_id: int):
         return self.connection.execute(
             "SELECT mode, rating, wins, losses, games FROM ratings WHERE guild_id=? AND user_id=? ORDER BY rating DESC",
@@ -321,7 +330,7 @@ mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mod
 
 
 class PlayerStatsModal(discord.ui.Modal):
-    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int):
+    def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str):
         self.mode = mode
         self.winner = winner
         self.team_one = team_one
@@ -329,6 +338,7 @@ class PlayerStatsModal(discord.ui.Modal):
         self.player_ids = player_ids
         self.stats = stats
         self.index = index
+        self.map_name = map_name
         player_id = player_ids[index]
         player_name = bot.get_user(player_id)
         name = player_name.display_name if player_name else str(player_id)
@@ -352,11 +362,11 @@ class PlayerStatsModal(discord.ui.Modal):
 
         next_index = self.index + 1
         if next_index < len(self.player_ids):
-            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index))
+            await interaction.response.send_modal(PlayerStatsModal(self.mode, self.winner, self.team_one, self.team_two, self.player_ids, self.stats, next_index, self.map_name))
             return
 
         try:
-            changes = bot.database.record_match(interaction.guild_id, self.mode, self.winner, self.team_one, self.team_two, self.stats, interaction.user.id)
+            changes = bot.database.record_match(interaction.guild_id, self.mode, self.winner, self.team_one, self.team_two, self.stats, interaction.user.id, self.map_name)
         except sqlite3.Error as error:
             await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
             return
@@ -403,10 +413,10 @@ async def season_end(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="match", description="Record a completed private Gears 5 match")
-@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs")
+@app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs", map_name="Optional map name")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
-async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str):
+async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, map_name: str | None = None):
     try:
         size = team_size(mode.value)
         first = parse_team(team_one, size)
@@ -414,7 +424,7 @@ async def match(interaction: discord.Interaction, mode: app_commands.Choice[str]
         if set(first) & set(second):
             raise ValueError("A player cannot be on both teams")
         player_ids = first + second
-        await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0))
+        await interaction.response.send_modal(PlayerStatsModal(mode.value, int(winner.value), first, second, player_ids, {}, 0, map_name or "Unknown"))
         return
     except (ValueError, sqlite3.Error) as error:
         await interaction.response.send_message(f"Could not record match: {error}", ephemeral=True)
@@ -520,6 +530,18 @@ async def teamstats(interaction: discord.Interaction, mode: app_commands.Choice[
         f"**{mode_label(mode.value)} team matchup**\n{first_name}: **{first_wins} wins**\n{second_name}: **{second_wins} wins**\nGames: **{row['games']}**\n"
         f"{first_name} totals — {first_totals}\n{second_name} totals — {second_totals}"
     )
+
+
+@bot.tree.command(name="mapstats", description="Show match counts and wins by map")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def mapstats(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.map_stats(interaction.guild_id, mode.value)
+    if not rows:
+        await interaction.response.send_message(f"No map data recorded for **{mode_label(mode.value)}** yet.")
+        return
+    lines = [f"**{row['map_name']}** — {row['games']} games · Team 1: {row['team_one_wins']} wins · Team 2: {row['team_two_wins']} wins" for row in rows]
+    await interaction.response.send_message(f"**{mode_label(mode.value)} map stats**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="undo", description="Undo the latest match in this server")
