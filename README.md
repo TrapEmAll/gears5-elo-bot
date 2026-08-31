@@ -34,68 +34,28 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 
 ## Commands
 
-- `/season` — show the active season.
-- `/season_start` — admin-only: start a named season.
-- `/season_end` — admin-only: end the active season.
-- `/season_reset` — admin-only: reset current Elo and streaks while preserving lifetime records and match history.
-- `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
-- `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
-- `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
-- `/match_vote` — approve or dispute a pending result.
-- `/note_add`, `/notes`, `/note_delete` — admin player notes.
-- `/preset_save`, `/presets`, `/preset_delete` — save and reuse frequent team rosters.
-- `/myhistory` — view your recent matches and personal stats.
-- `/mapplayer` — view a player's performance by map.
-- `/teamhistory` — view an exact recurring team's record and combined stats.
-- `/profile_set` — save an Xbox gamertag and alternate aliases for player search.
-- `/clips` — show attached match replay/clip links.
-- `/announce` — admin leaderboard announcement.
-- `/announcement_channel`, `/announcement_schedule`, `/announcement_cancel` — configure recurring leaderboard announcements.
-- `/match_edit` — admin correction of a player's stats; ratings are intentionally unchanged.
-- `/rematch` — reuse teams from a previous match.
-- `/series_start`, `/series_update`, `/series_status` — track BO3 and BO5 series.
-- `/availability`, `/available` — mark and view player availability.
-- `/schedule` — schedule a UTC match reminder.
-- `/rivalry` — show two players’ head-to-head record.
-- `/veto_start`, `/veto_ban`, `/veto_pick` — run a map veto and pick.
-- `/audit` — admin-only: show recent bot actions.
-- `/settings` — show Elo settings for a mode.
-- `/setelo` — admin-only: set starting rating and K-factor for a mode.
-- `/roles_setup` — admin-only: create Bronze, Silver, Gold, Onyx, and Master roles for a mode; the bot assigns them after matches.
-- `/balance` — build balanced teams from a lobby’s player list.
-- `/queue_join`, `/queue_leave`, `/queue` — join, leave, and view the per-mode matchmaking queue.
-- `/modes` — list supported modes.
-- `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
-- `/leaderboard` — show the top ten players by Elo, wins, win rate, kills, damage, score, or assists.
-- `/teamleaderboard` — rank recurring teams by record and performance.
-- `/player_search`, `/opponents` — find server players and view opponent records.
-- `/match_attach` — attach notes and replay/clip links to matches.
-- `/permission_set` — admin-only: require a Discord role for selected commands.
-- `/backup_now`, `/backup_restore` — create and restore SQLite backups; automatic daily backups run while the bot is online.
-- Leaderboards now use embeds with a refresh button.
-- `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. The home page includes all five mode leaderboards, with individual pages at `/mode/<mode>` and player pages at `/player/<discord-user-id>`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
-- `/rating` — show one player's ratings across modes.
-- `/trend` — upload an Elo trend chart with damage, kills, or score over time.
-- `/profile` — show a complete player profile with record and performance stats.
-- `/achievements` — show earned player badges.
-- `/achievement_create` — admin-only: create server-specific achievement goals.
-- `/elo_history` — show match-by-match Elo changes.
-- `/confidence` — show rating confidence based on games played.
-- `/predict` — estimate team win probabilities from average Elo.
-- `/awards` — show kills, damage, assists, and score leaders.
-- Match completion — automatically posts an MVP, team score totals, and Elo changes.
-- `/streaks` — show current and best win streak leaders for a mode.
-- `/mapstats` — show match counts and team wins by map.
-- `/maintenance` — admin-only: pause or resume match submissions.
-- `/history` — show recent recorded matches, optionally filtered by mode.
-- `/stats` — show a player's totals and per-match averages for a mode.
-- `/teamstats` — show the head-to-head record and combined totals for two exact teams.
-- `/chemistry` — show an exact roster’s overall record and combined stats across opponents.
-- `/undo` — admin-only: remove the latest match so it can be corrected and re-entered.
+- `/match record` — record a match and enter each player's stats one at a time.
+- `/match confirm`, `/match cancel`, `/match vote`, `/match edit`, `/match attach`, `/match rematch`, `/match forfeit`, `/match remake` — review and manage results.
+- `/stats leaderboard`, `/stats rating`, `/stats trend`, `/stats player`, `/stats history`, `/stats streaks`, `/stats predict`, `/stats awards`, `/stats elo_history`, `/stats confidence`, `/stats teamleaderboard`, `/stats teamstats`, `/stats close_games`, `/stats comebacks` — view rankings and analytics.
+- `/player profile`, `/player profile_set`, `/player search`, `/player opponents`, `/player rivalry`, `/player recent_form`, `/player consistency`, `/player personal_bests`, `/player compare`, `/player myhistory` — view player records and profiles.
+- `/team balance`, `/team random_teams`, `/team draft_start`, `/team draft_pick`, `/team draft_suggest`, `/team preset_save`, `/team presets`, `/team preset_delete`, `/team chemistry`, `/team teamhistory` — manage teams.
+- `/queue join`, `/queue leave`, `/queue status`, `/queue availability`, `/queue available`, `/queue schedule`, `/queue lfg` — find players and coordinate games.
+- `/season status`, `/season start`, `/season end`, `/season reset` — manage seasons.
+- `/series start`, `/series update`, `/series status` — track BO3/BO5 series.
+- `/tournament create`, `/tournament join`, `/tournament start`, `/tournament bracket` — run tournaments.
+- `/lobby create`, `/lobby checkin`, `/lobby status`, `/lobby no_show`, `/lobby match_channels`, `/lobby match_channels_close` — coordinate match lobbies.
+- `/maps veto_start`, `/maps veto_ban`, `/maps veto_pick`, `/maps mapstats`, `/maps mapplayer`, `/maps rotation_set`, `/maps next_map` — manage maps.
+- `/challenge create`, `/challenge accept`, `/challenge decline` — manage challenges.
+- `/admin settings`, `/admin setelo`, `/admin roles_setup`, `/admin roles_cleanup`, `/admin nickname_sync`, `/admin backup_now`, `/admin backup_restore`, `/admin integrity`, `/admin permission_set`, `/admin webhook_set`, `/admin dashboard_share`, `/admin announcement_channel`, `/admin announcement_schedule`, `/admin announcement_cancel`, `/admin maintenance`, `/admin note_add`, `/admin notes`, `/admin note_delete`, `/admin achievement_create`, `/admin captain_set`, `/admin audit` — administrator tools.
+- `/server modes`, `/server health`, `/server help_menu` — bot and server information.
+
+The bot now exposes 13 top-level commands instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+- `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
+- Match completion automatically posts an MVP, team score totals, and Elo changes. Leaderboards use embeds with a refresh button.
 
 Example for a 2v2 Gnashers match:
 
-`/match mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave map_name:Checkout`
+`/match record mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave map_name:Checkout`
 
 Administrators can use `/setelo` to configure a rating floor and the number of provisional games in addition to the starting rating and K-factor. The dashboard refreshes automatically and supports an all-mode filter plus JSON leaderboard endpoints at `/api/leaderboard/<mode>`.
 
@@ -110,8 +70,8 @@ After submitting the match, the bot opens a small form for each player. Enter on
 
 For 2v2 Gnashers, use for example: `kills=15 deaths=8 assists=4 damage=500 score=250`.
 
-To check a recurring matchup, use `/teamstats`. For example: `/teamstats mode:2v2 Gnashers team_one:@Alice, @Bob team_two:@John, @Jim`. The teams are matched by their player combinations, regardless of which side was entered as Team 1.
+To check a recurring matchup, use `/stats teamstats`. For example: `/stats teamstats mode:2v2 Gnashers team_one:@Alice, @Bob team_two:@John, @Jim`. The teams are matched by their player combinations, regardless of which side was entered as Team 1.
 
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, `damage`, and `score` on every line.
 
-The first time the bot is started, global slash-command sync can take a little while. To make commands appear immediately in one server during development, set up guild-scoped sync before deploying broadly.
+After updating, restart the bot so Discord can sync the grouped command tree. The first guild-scoped sync is immediate when `DISCORD_GUILD_ID` is set; global sync can take longer.

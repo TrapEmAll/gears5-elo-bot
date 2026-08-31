@@ -1071,6 +1071,24 @@ bot = GearsEloBot()
 mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mode, info in MODES.items()]
 queues: dict[tuple[int, str], list[int]] = {}
 
+# Keep the Discord command tree compact. Discord treats these as the only
+# top-level commands; the existing features live underneath relevant groups.
+match_group = app_commands.Group(name="match", description="Record and manage match results")
+stats_group = app_commands.Group(name="stats", description="Player, team, and leaderboard statistics")
+team_group = app_commands.Group(name="team", description="Build, save, and compare teams")
+queue_group = app_commands.Group(name="queue", description="Find players and coordinate lobbies")
+season_group = app_commands.Group(name="season", description="Manage competitive seasons")
+tournament_group = app_commands.Group(name="tournament", description="Run tournament brackets")
+player_group = app_commands.Group(name="player", description="Manage player profiles and records")
+admin_group = app_commands.Group(name="admin", description="Server administration")
+maps_group = app_commands.Group(name="maps", description="Maps, rotations, and vetoes")
+challenge_group = app_commands.Group(name="challenge", description="Player challenges")
+series_group = app_commands.Group(name="series", description="Track best-of series")
+lobby_group = app_commands.Group(name="lobby", description="Match lobbies and check-ins")
+server_group = app_commands.Group(name="server", description="Server tools and bot information")
+for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group):
+    bot.tree.add_command(_group)
+
 
 def has_command_access(interaction: discord.Interaction, command_name: str) -> bool:
     role_id = bot.database.command_role(interaction.guild_id, command_name)
@@ -1184,13 +1202,13 @@ class PlayerStatsModal(discord.ui.Modal):
         await interaction.response.send_message(f"📝 Match **#{pending_id}** is ready for confirmation. One player from each team must use `/match_confirm match_id:{pending_id}`. Use `/match_cancel match_id:{pending_id}` to discard it.")
 
 
-@bot.tree.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
+@server_group.command(name="modes", description="Show the Gears 5 modes tracked by this bot")
 async def modes(interaction: discord.Interaction):
     lines = [f"• {mode_label(mode)} — {team_size(mode)}v{team_size(mode)}" for mode in MODES]
     await interaction.response.send_message("**Tracked modes**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="settings", description="Show Elo settings for a mode")
+@admin_group.command(name="settings", description="Show Elo settings for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def settings(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -1198,7 +1216,7 @@ async def settings(interaction: discord.Interaction, mode: app_commands.Choice[s
     await interaction.response.send_message(f"**{mode_label(mode.value)} Elo settings**\nStarting rating: **{row['starting_rating']}**\nK-factor: **{row['k_factor']}**\nRating floor: **{row['rating_floor']}**\nProvisional games: **{row['provisional_games']}**")
 
 
-@bot.tree.command(name="setelo", description="Set starting rating and K-factor for a mode")
+@admin_group.command(name="setelo", description="Set starting rating and K-factor for a mode")
 @app_commands.describe(mode="Game mode", starting_rating="Starting rating for new players", k_factor="How quickly ratings move", rating_floor="Lowest allowed rating", provisional_games="Games before a rating is established")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1213,7 +1231,7 @@ async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str
     await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**, floor **{rating_floor}**, provisional games **{provisional_games}**.")
 
 
-@bot.tree.command(name="roles_setup", description="Create Elo tier roles for a mode")
+@admin_group.command(name="roles_setup", description="Create Elo tier roles for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1244,7 +1262,7 @@ async def roles_setup(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**{mode_label(mode.value)} tier roles ready.**\nCreated: {created_text}\nAlready existed: {existing_text}\nThe bot will assign them after each `/match`. Make sure the bot's highest role is above these roles.")
 
 
-@bot.tree.command(name="balance", description="Create balanced teams from a player list")
+@team_group.command(name="balance", description="Create balanced teams from a player list")
 @app_commands.describe(mode="Game mode", players="Comma-separated player mentions or IDs")
 @app_commands.choices(mode=mode_choices)
 async def balance(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
@@ -1260,7 +1278,7 @@ async def balance(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"**Balanced {mode_label(mode.value)} teams**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nAverage Elo: **{average_one:.0f}** vs **{average_two:.0f}**")
 
 
-@bot.tree.command(name="queue_join", description="Join the matchmaking queue for a mode")
+@queue_group.command(name="join", description="Join the matchmaking queue for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_join(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -1281,7 +1299,7 @@ async def queue_join(interaction: discord.Interaction, mode: app_commands.Choice
     await interaction.response.send_message(f"**{mode_label(mode.value)} lobby ready!**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nUse `/match` to record the result.")
 
 
-@bot.tree.command(name="queue_leave", description="Leave the matchmaking queue for a mode")
+@queue_group.command(name="leave", description="Leave the matchmaking queue for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_leave(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -1293,7 +1311,7 @@ async def queue_leave(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"<@{interaction.user.id}> left **{mode_label(mode.value)}** queue.")
 
 
-@bot.tree.command(name="queue", description="Show the matchmaking queue for a mode")
+@queue_group.command(name="status", description="Show the matchmaking queue for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_status(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -1303,7 +1321,7 @@ async def queue_status(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"**{mode_label(mode.value)} queue** ({len(queue)}/{needed})\n{names}")
 
 
-@bot.tree.command(name="random_teams", description="Randomize a lobby into two teams")
+@team_group.command(name="random_teams", description="Randomize a lobby into two teams")
 @app_commands.describe(mode="Game mode", players="Comma-separated players")
 @app_commands.choices(mode=mode_choices)
 async def random_teams(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
@@ -1317,7 +1335,7 @@ async def random_teams(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"**Random teams — {mode_label(mode.value)}**\nTeam 1: " + " + ".join(f"<@{x}>" for x in roster[:size]) + "\nTeam 2: " + " + ".join(f"<@{x}>" for x in roster[size:]))
 
 
-@bot.tree.command(name="draft_start", description="Start a captain-style player draft")
+@team_group.command(name="draft_start", description="Start a captain-style player draft")
 @app_commands.describe(mode="Game mode", players="Comma-separated players")
 @app_commands.choices(mode=mode_choices)
 async def draft_start(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
@@ -1330,7 +1348,7 @@ async def draft_start(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"🎯 Draft **#{draft_id}** started for {mode_label(mode.value)} with {len(roster)} players. Team 1 picks first using `/draft_pick draft_id:{draft_id} player:@player`.")
 
 
-@bot.tree.command(name="draft_pick", description="Make a pick in an active draft")
+@team_group.command(name="draft_pick", description="Make a pick in an active draft")
 @app_commands.describe(draft_id="Draft number", player="Player to pick")
 async def draft_pick(interaction: discord.Interaction, draft_id: int, player: discord.Member):
     row = bot.database.draft(interaction.guild_id, draft_id)
@@ -1351,7 +1369,7 @@ async def draft_pick(interaction: discord.Interaction, draft_id: int, player: di
     await interaction.response.send_message(f"Team {row['turn']} picked {player.mention}. " + (f"Teams complete: {' + '.join(f'<@{x}>' for x in team_one)} vs {' + '.join(f'<@{x}>' for x in team_two)}" if status == "complete" else f"Team {next_turn} picks next."))
 
 
-@bot.tree.command(name="draft_suggest", description="Suggest captain draft picks by Elo")
+@team_group.command(name="draft_suggest", description="Suggest captain draft picks by Elo")
 @app_commands.describe(mode="Game mode", players="Comma-separated players")
 @app_commands.choices(mode=mode_choices)
 async def draft_suggest(interaction: discord.Interaction, mode: app_commands.Choice[str], players: str):
@@ -1364,7 +1382,7 @@ async def draft_suggest(interaction: discord.Interaction, mode: app_commands.Cho
     await interaction.response.send_message("**Suggested snake-draft order**\n" + "\n".join(f"{index}. <@{player_id}> — {rating} Elo" for index, (player_id, rating) in enumerate(rated, 1)))
 
 
-@bot.tree.command(name="season", description="Show the active season")
+@season_group.command(name="status", description="Show the active season")
 async def season(interaction: discord.Interaction):
     active = bot.database.active_season(interaction.guild_id)
     if not active:
@@ -1373,7 +1391,7 @@ async def season(interaction: discord.Interaction):
     await interaction.response.send_message(f"**Active season:** {active['name']}\nStarted: {active['started_at'][:10]}\nNew matches are being recorded in this season.")
 
 
-@bot.tree.command(name="season_start", description="Start a named season")
+@season_group.command(name="start", description="Start a named season")
 @app_commands.describe(name="Season name, such as Season 1")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_start(interaction: discord.Interaction, name: str):
@@ -1385,7 +1403,7 @@ async def season_start(interaction: discord.Interaction, name: str):
     await interaction.response.send_message(f"Started **{active['name']}**. Future matches will be tagged to this season.")
 
 
-@bot.tree.command(name="season_end", description="End the active season")
+@season_group.command(name="end", description="End the active season")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_end(interaction: discord.Interaction):
     try:
@@ -1401,7 +1419,7 @@ async def season_end(interaction: discord.Interaction):
         await channel.send(f"🏁 Season **{ended['name']}** has ended. Final standings remain available in the dashboard.")
 
 
-@bot.tree.command(name="season_reset", description="Reset current ratings for a fresh season")
+@season_group.command(name="reset", description="Reset current ratings for a fresh season")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_reset(interaction: discord.Interaction):
     bot.database.reset_ratings(interaction.guild_id)
@@ -1409,7 +1427,7 @@ async def season_reset(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Current ratings and season records were reset. Historical matches remain available through `/history` and `/myhistory`.")
 
 
-@bot.tree.command(name="tournament_create", description="Create a tournament registration")
+@tournament_group.command(name="create", description="Create a tournament registration")
 @app_commands.describe(name="Tournament name", mode="Game mode", format="Tournament format")
 @app_commands.choices(mode=mode_choices, format=[app_commands.Choice(name="Single elimination", value="single"), app_commands.Choice(name="Double elimination", value="double"), app_commands.Choice(name="Round robin", value="round_robin")])
 async def tournament_create(interaction: discord.Interaction, name: str, mode: app_commands.Choice[str], format: app_commands.Choice[str]):
@@ -1417,7 +1435,7 @@ async def tournament_create(interaction: discord.Interaction, name: str, mode: a
     await interaction.response.send_message(f"🏆 Created **{name}** tournament **#{tournament_id}** ({format.name}). Players can register with `/tournament_join tournament_id:{tournament_id}`.")
 
 
-@bot.tree.command(name="tournament_join", description="Register for a tournament")
+@tournament_group.command(name="join", description="Register for a tournament")
 @app_commands.describe(tournament_id="Tournament number", team_name="Optional team name")
 async def tournament_join(interaction: discord.Interaction, tournament_id: int, team_name: str = ""):
     tournament = bot.database.tournament(interaction.guild_id, tournament_id)
@@ -1428,7 +1446,7 @@ async def tournament_join(interaction: discord.Interaction, tournament_id: int, 
     await interaction.response.send_message(f"Registered {interaction.user.mention} for **{tournament['name']}**.")
 
 
-@bot.tree.command(name="tournament_start", description="Generate a tournament bracket")
+@tournament_group.command(name="start", description="Generate a tournament bracket")
 @app_commands.describe(tournament_id="Tournament number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def tournament_start(interaction: discord.Interaction, tournament_id: int):
@@ -1452,7 +1470,7 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: int)
     await interaction.response.send_message(f"✅ Started **{tournament['name']}** with {len(bracket)} opening matchup(s).\n" + "\n".join(f"Game {index}: <@{item['team_one'][0]}> vs <@{item['team_two'][0]}>" for index, item in enumerate(bracket, 1)))
 
 
-@bot.tree.command(name="tournament_bracket", description="Show a tournament bracket")
+@tournament_group.command(name="bracket", description="Show a tournament bracket")
 @app_commands.describe(tournament_id="Tournament number")
 async def tournament_bracket(interaction: discord.Interaction, tournament_id: int):
     tournament = bot.database.tournament(interaction.guild_id, tournament_id)
@@ -1466,7 +1484,7 @@ async def tournament_bracket(interaction: discord.Interaction, tournament_id: in
     await interaction.response.send_message(f"**{tournament['name']} bracket**\n" + "\n".join(f"Round {item['round']}: <@{item['team_one'][0]}> vs <@{item['team_two'][0]}> — {item['status']}" for item in bracket))
 
 
-@bot.tree.command(name="teamleaderboard", description="Rank recurring teams in a mode")
+@stats_group.command(name="teamleaderboard", description="Rank recurring teams in a mode")
 @app_commands.describe(mode="Game mode", limit="Number of teams")
 @app_commands.choices(mode=mode_choices)
 async def teamleaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str], limit: int = 10):
@@ -1481,7 +1499,7 @@ async def teamleaderboard(interaction: discord.Interaction, mode: app_commands.C
     await interaction.response.send_message(f"**{mode_label(mode.value)} team rankings**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="player_search", description="Search server members by name")
+@player_group.command(name="search", description="Search server members by name")
 @app_commands.describe(query="Name fragment")
 async def player_search(interaction: discord.Interaction, query: str):
     if not interaction.guild:
@@ -1502,7 +1520,7 @@ async def player_search(interaction: discord.Interaction, query: str):
     await interaction.response.send_message("**Players found**\n" + "\n".join(f"{member.mention} — `{member.id}`" for member in matches))
 
 
-@bot.tree.command(name="opponents", description="Show a player's opponent records")
+@player_group.command(name="opponents", description="Show a player's opponent records")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def opponents(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -1515,7 +1533,7 @@ async def opponents(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"**{member.display_name}'s opponents — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="match_attach", description="Attach notes or a replay link to a match")
+@match_group.command(name="attach", description="Attach notes or a replay link to a match")
 @app_commands.describe(match_id="Match number", note="Optional match note", replay_url="Optional clip or replay URL")
 async def match_attach(interaction: discord.Interaction, match_id: int, note: str = "", replay_url: str = ""):
     exists = bot.database.connection.execute("SELECT id FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
@@ -1530,7 +1548,7 @@ async def match_attach(interaction: discord.Interaction, match_id: int, note: st
     await interaction.response.send_message(f"Attached details to match **#{match_id}**.")
 
 
-@bot.tree.command(name="challenge", description="Challenge another player to a 1v1 match")
+@challenge_group.command(name="create", description="Challenge another player to a 1v1 match")
 @app_commands.describe(mode="1v1 game mode", opponent="Player to challenge")
 @app_commands.choices(mode=[choice for choice in mode_choices if team_size(choice.value) == 1])
 async def challenge(interaction: discord.Interaction, mode: app_commands.Choice[str], opponent: discord.Member):
@@ -1541,7 +1559,7 @@ async def challenge(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"⚔️ <@{interaction.user.id}> challenged <@{opponent.id}> to **{mode_label(mode.value)}** (challenge **#{challenge_id}**). Use `/challenge_accept challenge_id:{challenge_id}` to accept.")
 
 
-@bot.tree.command(name="challenge_accept", description="Accept a pending challenge")
+@challenge_group.command(name="challenge_accept", description="Accept a pending challenge")
 @app_commands.describe(challenge_id="Challenge number")
 async def challenge_accept(interaction: discord.Interaction, challenge_id: int):
     row = bot.database.challenge(interaction.guild_id, challenge_id)
@@ -1554,7 +1572,7 @@ async def challenge_accept(interaction: discord.Interaction, challenge_id: int):
     await interaction.response.send_message(f"✅ Challenge **#{challenge_id}** accepted. Play the match, then record it with `/match`.")
 
 
-@bot.tree.command(name="challenge_decline", description="Decline a pending challenge")
+@challenge_group.command(name="challenge_decline", description="Decline a pending challenge")
 @app_commands.describe(challenge_id="Challenge number")
 async def challenge_decline(interaction: discord.Interaction, challenge_id: int):
     row = bot.database.challenge(interaction.guild_id, challenge_id)
@@ -1565,7 +1583,7 @@ async def challenge_decline(interaction: discord.Interaction, challenge_id: int)
     await interaction.response.send_message(f"Challenge **#{challenge_id}** declined.")
 
 
-@bot.tree.command(name="captain_set", description="Set the captain for one side of a mode")
+@admin_group.command(name="captain_set", description="Set the captain for one side of a mode")
 @app_commands.describe(mode="Game mode", team="Team side", captain="Player who can confirm for this side")
 @app_commands.choices(mode=mode_choices, team=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1574,7 +1592,7 @@ async def captain_set(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"Set {captain.mention} as Team {team.value} captain for **{mode_label(mode.value)}**.")
 
 
-@bot.tree.command(name="match_confirm", description="Confirm a pending match result")
+@match_group.command(name="confirm", description="Confirm a pending match result")
 @app_commands.describe(match_id="Pending match number")
 async def match_confirm(interaction: discord.Interaction, match_id: int):
     if not has_command_access(interaction, "match_confirm"):
@@ -1616,7 +1634,7 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
     await interaction.response.send_message(f"✅ **{mode_label(row['mode'])} recorded** — Team {row['winner']} wins\n{change_text}\nStats saved for {len(stats)} players.")
 
 
-@bot.tree.command(name="match_cancel", description="Discard a pending match result")
+@match_group.command(name="cancel", description="Discard a pending match result")
 @app_commands.describe(match_id="Pending match number")
 async def match_cancel(interaction: discord.Interaction, match_id: int):
     if not has_command_access(interaction, "match_cancel"):
@@ -1630,7 +1648,7 @@ async def match_cancel(interaction: discord.Interaction, match_id: int):
     await interaction.response.send_message(f"Discarded pending match **#{match_id}**.")
 
 
-@bot.tree.command(name="match", description="Record a completed private Gears 5 match")
+@match_group.command(name="record", description="Record a completed private Gears 5 match")
 @app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs", map_name="Optional map name")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
@@ -1655,7 +1673,7 @@ async def match(interaction: discord.Interaction, mode: app_commands.Choice[str]
         return
 
 
-@bot.tree.command(name="rematch", description="Reuse teams from a prior match and enter a new result")
+@match_group.command(name="rematch", description="Reuse teams from a prior match and enter a new result")
 @app_commands.describe(match_id="Previous match number", winner="Winner of the rematch")
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 async def rematch(interaction: discord.Interaction, match_id: int, winner: app_commands.Choice[str]):
@@ -1669,7 +1687,7 @@ async def rematch(interaction: discord.Interaction, match_id: int, winner: app_c
     await interaction.response.send_modal(PlayerStatsModal(previous["mode"], int(winner.value), first, second, first + second, {}, 0, previous["map_name"]))
 
 
-@bot.tree.command(name="availability", description="Set your availability for finding matches")
+@queue_group.command(name="availability", description="Set your availability for finding matches")
 @app_commands.describe(status="Your current availability")
 @app_commands.choices(status=[app_commands.Choice(name="Available", value="available"), app_commands.Choice(name="Busy", value="busy"), app_commands.Choice(name="Offline", value="offline")])
 async def availability(interaction: discord.Interaction, status: app_commands.Choice[str]):
@@ -1678,7 +1696,7 @@ async def availability(interaction: discord.Interaction, status: app_commands.Ch
     await interaction.response.send_message(f"Set your status to **{status.value}**.")
 
 
-@bot.tree.command(name="available", description="List players by availability")
+@queue_group.command(name="available", description="List players by availability")
 async def available(interaction: discord.Interaction):
     rows = bot.database.availability_rows(interaction.guild_id)
     if not rows:
@@ -1688,7 +1706,7 @@ async def available(interaction: discord.Interaction):
     await interaction.response.send_message("**Player availability**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="rivalry", description="Show the head-to-head record between two players")
+@player_group.command(name="rivalry", description="Show the head-to-head record between two players")
 @app_commands.describe(mode="Game mode", first="First player", second="Second player")
 @app_commands.choices(mode=mode_choices)
 async def rivalry(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.Member, second: discord.Member):
@@ -1699,7 +1717,7 @@ async def rivalry(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"**{first.display_name} vs {second.display_name} — {mode_label(mode.value)}**\nGames: **{row['games']}**\n{first.mention}: **{row['first_wins']} wins**\n{second.mention}: **{row['second_wins']} wins**")
 
 
-@bot.tree.command(name="match_vote", description="Approve or dispute a pending match result")
+@match_group.command(name="vote", description="Approve or dispute a pending match result")
 @app_commands.describe(match_id="Pending match number", decision="Your decision")
 @app_commands.choices(decision=[app_commands.Choice(name="Approve", value="approve"), app_commands.Choice(name="Dispute", value="dispute")])
 async def match_vote(interaction: discord.Interaction, match_id: int, decision: app_commands.Choice[str]):
@@ -1721,7 +1739,7 @@ async def match_vote(interaction: discord.Interaction, match_id: int, decision: 
     await interaction.response.send_message(f"Approval recorded for match **#{match_id}** ({len(confirmed)} confirmation(s)). Use `/match_confirm match_id:{match_id}` when both sides have approved.")
 
 
-@bot.tree.command(name="note_add", description="Add an admin note to a player")
+@admin_group.command(name="note_add", description="Add an admin note to a player")
 @app_commands.describe(player="Player", note="Note text")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def note_add(interaction: discord.Interaction, player: discord.Member, note: str):
@@ -1730,7 +1748,7 @@ async def note_add(interaction: discord.Interaction, player: discord.Member, not
     await interaction.response.send_message(f"Added private admin note **#{note_id}** for {player.display_name}.", ephemeral=True)
 
 
-@bot.tree.command(name="notes", description="View admin notes for a player")
+@admin_group.command(name="notes", description="View admin notes for a player")
 @app_commands.describe(player="Player")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def notes(interaction: discord.Interaction, player: discord.Member):
@@ -1741,7 +1759,7 @@ async def notes(interaction: discord.Interaction, player: discord.Member):
     await interaction.response.send_message("**Admin notes**\n" + "\n".join(f"#{row['id']} ({row['created_at'][:10]}): {row['note']}" for row in rows), ephemeral=True)
 
 
-@bot.tree.command(name="note_delete", description="Delete an admin note")
+@admin_group.command(name="note_delete", description="Delete an admin note")
 @app_commands.describe(note_id="Note number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def note_delete(interaction: discord.Interaction, note_id: int):
@@ -1752,7 +1770,7 @@ async def note_delete(interaction: discord.Interaction, note_id: int):
     await interaction.response.send_message(f"Deleted note **#{note_id}**.", ephemeral=True)
 
 
-@bot.tree.command(name="preset_save", description="Save a frequent team roster")
+@team_group.command(name="preset_save", description="Save a frequent team roster")
 @app_commands.describe(name="Preset name", mode="Game mode", players="Comma-separated players")
 @app_commands.choices(mode=mode_choices)
 async def preset_save(interaction: discord.Interaction, name: str, mode: app_commands.Choice[str], players: str):
@@ -1765,13 +1783,13 @@ async def preset_save(interaction: discord.Interaction, name: str, mode: app_com
     await interaction.response.send_message(f"Saved team preset **{name}** for {mode_label(mode.value)}.")
 
 
-@bot.tree.command(name="presets", description="List saved team presets")
+@team_group.command(name="presets", description="List saved team presets")
 async def presets(interaction: discord.Interaction):
     rows = bot.database.presets(interaction.guild_id)
     await interaction.response.send_message("**Team presets**\n" + ("\n".join(f"**{row['name']}** — {mode_label(row['mode'])}: " + " + ".join(f"<@{x}>" for x in row['players'].split(",")) for row in rows) if rows else "No presets saved."))
 
 
-@bot.tree.command(name="preset_delete", description="Delete a saved team preset")
+@team_group.command(name="preset_delete", description="Delete a saved team preset")
 @app_commands.describe(name="Preset name")
 async def preset_delete(interaction: discord.Interaction, name: str):
     if not bot.database.delete_preset(interaction.guild_id, name):
@@ -1780,7 +1798,7 @@ async def preset_delete(interaction: discord.Interaction, name: str):
     await interaction.response.send_message(f"Deleted preset **{name}**.")
 
 
-@bot.tree.command(name="series_start", description="Start a best-of-3 or best-of-5 series")
+@series_group.command(name="start", description="Start a best-of-3 or best-of-5 series")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", format="Series format")
 @app_commands.choices(mode=mode_choices, format=[app_commands.Choice(name="Best of 3", value="2"), app_commands.Choice(name="Best of 5", value="3")])
 async def series_start(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, format: app_commands.Choice[str]):
@@ -1796,7 +1814,7 @@ async def series_start(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"Started **BO{int(format.value) * 2 - 1} series #{series_id}** for {mode_label(mode.value)}. Use `/series_update series_id:{series_id} winner:Team 1` after each game.")
 
 
-@bot.tree.command(name="series_update", description="Add a game result to a series")
+@series_group.command(name="update", description="Add a game result to a series")
 @app_commands.describe(series_id="Series number", winner="Winning side")
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 async def series_update(interaction: discord.Interaction, series_id: int, winner: app_commands.Choice[str]):
@@ -1808,7 +1826,7 @@ async def series_update(interaction: discord.Interaction, series_id: int, winner
     await interaction.response.send_message(f"Series **#{series_id}** is **{status}**: Team 1 **{row['team_one_wins']}** — Team 2 **{row['team_two_wins']}**.")
 
 
-@bot.tree.command(name="series_status", description="Show a series score")
+@series_group.command(name="status", description="Show a series score")
 @app_commands.describe(series_id="Series number")
 async def series_status(interaction: discord.Interaction, series_id: int):
     row = bot.database.get_series(interaction.guild_id, series_id)
@@ -1818,7 +1836,7 @@ async def series_status(interaction: discord.Interaction, series_id: int):
     await interaction.response.send_message(f"**Series #{series_id}** — {mode_label(row['mode'])}\nTeam 1: **{row['team_one_wins']}** · Team 2: **{row['team_two_wins']}** · {row['status'].title()}")
 
 
-@bot.tree.command(name="schedule", description="Schedule a match reminder")
+@queue_group.command(name="schedule", description="Schedule a match reminder")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", when="UTC ISO time, e.g. 2026-09-01T20:00:00+00:00")
 @app_commands.choices(mode=mode_choices)
 async def schedule(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, when: str):
@@ -1835,7 +1853,7 @@ async def schedule(interaction: discord.Interaction, mode: app_commands.Choice[s
     await interaction.response.send_message(f"⏰ Scheduled match **#{schedule_id}** for **{scheduled_at[:16].replace('T', ' ')} UTC**.")
 
 
-@bot.tree.command(name="lobby_create", description="Create a check-in lobby for two teams")
+@lobby_group.command(name="create", description="Create a check-in lobby for two teams")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players")
 @app_commands.choices(mode=mode_choices)
 async def lobby_create(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
@@ -1851,7 +1869,7 @@ async def lobby_create(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"🎮 Lobby **#{lobby_id}** created for {mode_label(mode.value)}. Check in with `/checkin lobby_id:{lobby_id}`.\n{mentions}")
 
 
-@bot.tree.command(name="checkin", description="Check in for a match lobby")
+@lobby_group.command(name="checkin", description="Check in for a match lobby")
 @app_commands.describe(lobby_id="Lobby number")
 async def checkin(interaction: discord.Interaction, lobby_id: int):
     row = bot.database.lobby(interaction.guild_id, lobby_id)
@@ -1868,7 +1886,7 @@ async def checkin(interaction: discord.Interaction, lobby_id: int):
     await interaction.response.send_message(f"✅ {interaction.user.mention} checked in ({len(checked)}/{len(players)})." + (" Lobby is ready." if status == "ready" else ""))
 
 
-@bot.tree.command(name="lobby_status", description="Show match lobby check-ins")
+@lobby_group.command(name="status", description="Show match lobby check-ins")
 @app_commands.describe(lobby_id="Lobby number")
 async def lobby_status(interaction: discord.Interaction, lobby_id: int):
     row = bot.database.lobby(interaction.guild_id, lobby_id)
@@ -1880,7 +1898,7 @@ async def lobby_status(interaction: discord.Interaction, lobby_id: int):
     await interaction.response.send_message(f"**Lobby #{lobby_id} — {row['status']}**\nChecked in: {len(checked)}/{len(players)}\nMissing: " + (" ".join(f"<@{x}>" for x in players if x not in checked and x not in no_shows) or "none") + "\nNo-shows: " + (" ".join(f"<@{x}>" for x in no_shows) or "none"))
 
 
-@bot.tree.command(name="no_show", description="Mark a player as a no-show")
+@lobby_group.command(name="no_show", description="Mark a player as a no-show")
 @app_commands.describe(lobby_id="Lobby number", player="Player who missed check-in")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def no_show(interaction: discord.Interaction, lobby_id: int, player: discord.Member):
@@ -1894,14 +1912,14 @@ async def no_show(interaction: discord.Interaction, lobby_id: int, player: disco
     await interaction.response.send_message(f"Marked {player.mention} as a no-show for lobby **#{lobby_id}**.")
 
 
-@bot.tree.command(name="remake", description="Mark a game as remade without changing ratings")
+@match_group.command(name="remake", description="Mark a game as remade without changing ratings")
 @app_commands.describe(reason="Why the game was remade")
 async def remake(interaction: discord.Interaction, reason: str):
     bot.database.audit(interaction.guild_id, interaction.user.id, "remake", reason[:500])
     await interaction.response.send_message(f"🔁 Remake logged by {interaction.user.mention}. No Elo or stats were changed. Reason: {reason}")
 
 
-@bot.tree.command(name="forfeit", description="Submit a forfeit result for confirmation")
+@match_group.command(name="forfeit", description="Submit a forfeit result for confirmation")
 @app_commands.describe(mode="Game mode", winner="Winning team", team_one="Team 1 players", team_two="Team 2 players")
 @app_commands.choices(mode=mode_choices, winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 async def forfeit(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str):
@@ -1917,7 +1935,7 @@ async def forfeit(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"Forfeit match **#{pending_id}** submitted. Both sides must confirm with `/match_confirm match_id:{pending_id}`.")
 
 
-@bot.tree.command(name="dispute_resolve", description="Resolve a pending match dispute")
+@match_group.command(name="dispute_resolve", description="Resolve a pending match dispute")
 @app_commands.describe(match_id="Pending match number", decision="Resolution")
 @app_commands.choices(decision=[app_commands.Choice(name="Accept result", value="accept"), app_commands.Choice(name="Reject result", value="reject")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1939,14 +1957,14 @@ async def dispute_resolve(interaction: discord.Interaction, match_id: int, decis
     await interaction.response.send_message(f"Accepted and recorded pending match **#{match_id}**.")
 
 
-@bot.tree.command(name="lfg", description="Post a looking-for-group request")
+@queue_group.command(name="lfg", description="Post a looking-for-group request")
 @app_commands.describe(mode="Game mode", message="What you are looking for")
 @app_commands.choices(mode=mode_choices)
 async def lfg(interaction: discord.Interaction, mode: app_commands.Choice[str], message: str = "Need players"):
     await interaction.response.send_message(f"📣 **LFG — {mode_label(mode.value)}**\n{interaction.user.mention} is looking for players: {message}")
 
 
-@bot.tree.command(name="match_channels", description="Create temporary text and voice channels for a match")
+@lobby_group.command(name="channels", description="Create temporary text and voice channels for a match")
 @app_commands.describe(name="Short match name", players="Players to mention")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def match_channels(interaction: discord.Interaction, name: str, players: str = ""):
@@ -1963,7 +1981,7 @@ async def match_channels(interaction: discord.Interaction, name: str, players: s
     await interaction.response.send_message(f"Created {text_channel.mention} and {voice_channel.mention}. They will be deleted after six hours.")
 
 
-@bot.tree.command(name="match_channels_close", description="Close temporary match channels")
+@lobby_group.command(name="channels_close", description="Close temporary match channels")
 @app_commands.describe(channel="Channel to close")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def match_channels_close(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -1975,7 +1993,7 @@ async def match_channels_close(interaction: discord.Interaction, channel: discor
     await interaction.response.send_message(f"Closed **{channel.name}**.")
 
 
-@bot.tree.command(name="veto_start", description="Start a map ban and pick session")
+@maps_group.command(name="veto_start", description="Start a map ban and pick session")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", maps="Comma-separated map names")
 @app_commands.choices(mode=mode_choices)
 async def veto_start(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, maps: str):
@@ -1992,7 +2010,7 @@ async def veto_start(interaction: discord.Interaction, mode: app_commands.Choice
     await interaction.response.send_message(f"🗺️ Veto session **#{veto_id}** started with: {', '.join(map_list)}. Use `/veto_ban` or `/veto_pick`.")
 
 
-@bot.tree.command(name="veto_ban", description="Ban a map from a veto session")
+@maps_group.command(name="veto_ban", description="Ban a map from a veto session")
 @app_commands.describe(veto_id="Veto session number", map_name="Map to ban")
 async def veto_ban(interaction: discord.Interaction, veto_id: int, map_name: str):
     row = bot.database.get_veto(interaction.guild_id, veto_id)
@@ -2008,7 +2026,7 @@ async def veto_ban(interaction: discord.Interaction, veto_id: int, map_name: str
     await interaction.response.send_message(f"Banned **{map_name}**. Remaining maps: {', '.join(remaining)}")
 
 
-@bot.tree.command(name="veto_pick", description="Pick the final map in a veto session")
+@maps_group.command(name="veto_pick", description="Pick the final map in a veto session")
 @app_commands.describe(veto_id="Veto session number", map_name="Map to pick")
 async def veto_pick(interaction: discord.Interaction, veto_id: int, map_name: str):
     row = bot.database.get_veto(interaction.guild_id, veto_id)
@@ -2023,7 +2041,7 @@ async def veto_pick(interaction: discord.Interaction, veto_id: int, map_name: st
     await interaction.response.send_message(f"✅ **{map_name}** selected for veto session **#{veto_id}**.")
 
 
-@bot.tree.command(name="leaderboard", description="Show the top ratings for a mode")
+@stats_group.command(name="leaderboard", description="Show the top ratings for a mode")
 @app_commands.describe(mode="Game mode", metric="Ranking metric")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
@@ -2039,7 +2057,7 @@ async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(embed=embed, view=LeaderboardView(interaction.guild_id, mode.value, metric_value))
 
 
-@bot.tree.command(name="streaks", description="Show the current win-streak leaders for a mode")
+@stats_group.command(name="streaks", description="Show the current win-streak leaders for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def streaks(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -2051,7 +2069,7 @@ async def streaks(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"**{mode_label(mode.value)} streak leaders**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="rating", description="Show a player's ratings across all modes")
+@stats_group.command(name="rating", description="Show a player's ratings across all modes")
 @app_commands.describe(player="Optional player; defaults to you")
 async def rating(interaction: discord.Interaction, player: discord.Member | None = None):
     member = player or interaction.user
@@ -2063,7 +2081,7 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
     await interaction.response.send_message(f"**{member.display_name}'s ratings**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="trend", description="Show a player's Elo and performance trend")
+@stats_group.command(name="trend", description="Show a player's Elo and performance trend")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you", metric="Performance metric to chart")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(metric=[
@@ -2110,7 +2128,7 @@ async def trend(interaction: discord.Interaction, mode: app_commands.Choice[str]
     )
 
 
-@bot.tree.command(name="profile", description="Show a complete player profile")
+@player_group.command(name="profile", description="Show a complete player profile")
 @app_commands.describe(player="Optional player; defaults to you")
 async def profile(interaction: discord.Interaction, player: discord.Member | None = None):
     member = player or interaction.user
@@ -2128,7 +2146,7 @@ async def profile(interaction: discord.Interaction, player: discord.Member | Non
     await interaction.response.send_message(f"**{member.display_name}'s profile**\nFavorite mode: **{mode_label(favorite['mode'])}**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="achievements", description="Show a player's earned badges")
+@stats_group.command(name="achievements", description="Show a player's earned badges")
 @app_commands.describe(player="Optional player; defaults to you")
 async def achievements(interaction: discord.Interaction, player: discord.Member | None = None):
     member = player or interaction.user
@@ -2160,7 +2178,7 @@ async def achievements(interaction: discord.Interaction, player: discord.Member 
     await interaction.response.send_message(f"**{member.display_name}'s achievements**\n" + "\n".join(dict.fromkeys(badges)))
 
 
-@bot.tree.command(name="achievement_create", description="Create a server-specific achievement")
+@admin_group.command(name="achievement_create", description="Create a server-specific achievement")
 @app_commands.describe(name="Achievement name", metric="Progress metric", threshold="Required total")
 @app_commands.choices(metric=[app_commands.Choice(name="Games", value="games"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -2172,7 +2190,7 @@ async def achievement_create(interaction: discord.Interaction, name: str, metric
     await interaction.response.send_message(f"Created achievement **#{achievement_id} {name}**: {threshold} {metric.value}.")
 
 
-@bot.tree.command(name="elo_history", description="Show a player's Elo changes")
+@stats_group.command(name="elo_history", description="Show a player's Elo changes")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you", limit="Number of matches")
 @app_commands.choices(mode=mode_choices)
 async def elo_history(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None, limit: int = 10):
@@ -2184,7 +2202,7 @@ async def elo_history(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**{member.display_name} Elo history — {mode_label(mode.value)}**\n" + "\n".join(f"Match #{row['id']}: {row['rating_before']} → {row['rating_before'] + row['rating_delta']} ({row['rating_delta']:+d})" for row in rows))
 
 
-@bot.tree.command(name="confidence", description="Show how established a player's rating is")
+@stats_group.command(name="confidence", description="Show how established a player's rating is")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def confidence(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2196,7 +2214,7 @@ async def confidence(interaction: discord.Interaction, mode: app_commands.Choice
     await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)}**\nElo: **{rating_value}**\nRating confidence: **{confidence_value:.0f}%** ({games} games; confidence increases with more results)")
 
 
-@bot.tree.command(name="predict", description="Estimate each team's win probability")
+@stats_group.command(name="predict", description="Estimate each team's win probability")
 @app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players")
 @app_commands.choices(mode=mode_choices)
 async def predict(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
@@ -2213,7 +2231,7 @@ async def predict(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message(f"**{mode_label(mode.value)} prediction**\nTeam 1 average Elo: **{first_rating:.0f}** — **{probability:.0f}%** chance\nTeam 2 average Elo: **{second_rating:.0f}** — **{100 - probability:.0f}%** chance")
 
 
-@bot.tree.command(name="awards", description="Show performance leaders for a mode")
+@stats_group.command(name="awards", description="Show performance leaders for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def awards(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -2226,7 +2244,7 @@ async def awards(interaction: discord.Interaction, mode: app_commands.Choice[str
     await interaction.response.send_message(f"**{mode_label(mode.value)} performance awards**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="stats", description="Show a player's match-stat totals and averages")
+@stats_group.command(name="player", description="Show a player's match-stat totals and averages")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def stats(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2242,7 +2260,7 @@ async def stats(interaction: discord.Interaction, mode: app_commands.Choice[str]
     await interaction.response.send_message(f"**{member.display_name} — {mode_label(mode.value)} stats**\nMatches: **{matches_played}**\nTotals — {totals}\nAverages — {averages}")
 
 
-@bot.tree.command(name="myhistory", description="Show your recent matches with full personal stats")
+@player_group.command(name="myhistory", description="Show your recent matches with full personal stats")
 @app_commands.describe(limit="Number of matches, from 1 to 20")
 async def myhistory(interaction: discord.Interaction, limit: int = 10):
     rows = bot.database.player_history(interaction.guild_id, interaction.user.id, limit)
@@ -2253,7 +2271,7 @@ async def myhistory(interaction: discord.Interaction, limit: int = 10):
     await interaction.response.send_message("**Your recent match history**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="mapplayer", description="Show a player's performance by map")
+@maps_group.command(name="mapplayer", description="Show a player's performance by map")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def mapplayer(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2266,7 +2284,7 @@ async def mapplayer(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"**{member.display_name} map analytics — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="announce", description="Post a leaderboard announcement")
+@admin_group.command(name="announce", description="Post a leaderboard announcement")
 @app_commands.describe(mode="Game mode", metric="Leaderboard metric")
 @app_commands.choices(mode=mode_choices, metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Kills", value="kills")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -2281,7 +2299,7 @@ async def announce(interaction: discord.Interaction, mode: app_commands.Choice[s
     await interaction.response.send_message(f"📣 **{mode_label(mode.value)} leaderboard announcement**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="match_edit", description="Correct a player's recorded stats in a match")
+@match_group.command(name="edit", description="Correct a player's recorded stats in a match")
 @app_commands.describe(match_id="Recorded match number", player="Player whose stats need correction", stats_line="Complete stat line, e.g. kills=10 deaths=4 damage=200 score=100")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def match_edit(interaction: discord.Interaction, match_id: int, player: discord.Member, stats_line: str):
@@ -2303,7 +2321,7 @@ async def match_edit(interaction: discord.Interaction, match_id: int, player: di
     await interaction.response.send_message(f"Corrected {player.mention}'s stats in match **#{match_id}**. Elo was not changed; use `/undo` and re-enter the match if the result or ratings also need correction.", ephemeral=True)
 
 
-@bot.tree.command(name="teamstats", description="Show the head-to-head record for two exact teams")
+@stats_group.command(name="teamstats", description="Show the head-to-head record for two exact teams")
 @app_commands.describe(mode="Game mode", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs")
 @app_commands.choices(mode=mode_choices)
 async def teamstats(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str):
@@ -2334,7 +2352,7 @@ async def teamstats(interaction: discord.Interaction, mode: app_commands.Choice[
     )
 
 
-@bot.tree.command(name="chemistry", description="Show an exact team's overall chemistry")
+@team_group.command(name="chemistry", description="Show an exact team's overall chemistry")
 @app_commands.describe(mode="Game mode", team="Comma-separated mentions/IDs for the team")
 @app_commands.choices(mode=mode_choices)
 async def chemistry(interaction: discord.Interaction, mode: app_commands.Choice[str], team: str):
@@ -2353,7 +2371,7 @@ async def chemistry(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"**Team chemistry — {mode_label(mode.value)}**\n{roster}\nRecord: **{row['wins']}-{row['losses']}** · Chemistry: **{win_rate:.0f}%** · Games: **{row['games']}**\nTeam totals — {totals}")
 
 
-@bot.tree.command(name="mapstats", description="Show match counts and wins by map")
+@maps_group.command(name="mapstats", description="Show match counts and wins by map")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def mapstats(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -2365,7 +2383,7 @@ async def mapstats(interaction: discord.Interaction, mode: app_commands.Choice[s
     await interaction.response.send_message(f"**{mode_label(mode.value)} map stats**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="history", description="Show recent recorded matches")
+@stats_group.command(name="history", description="Show recent recorded matches")
 @app_commands.describe(mode="Optional game mode", limit="Number of matches, from 1 to 20")
 @app_commands.choices(mode=mode_choices)
 async def history(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 10):
@@ -2382,7 +2400,7 @@ async def history(interaction: discord.Interaction, mode: app_commands.Choice[st
     await interaction.response.send_message("**Recent match history**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="undo", description="Undo the latest match in this server")
+@match_group.command(name="undo", description="Undo the latest match in this server")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def undo(interaction: discord.Interaction):
     if not has_command_access(interaction, "undo"):
@@ -2397,7 +2415,7 @@ async def undo(interaction: discord.Interaction):
     await interaction.response.send_message(f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match` if needed.")
 
 
-@bot.tree.command(name="audit", description="Show recent administrative bot actions")
+@admin_group.command(name="audit", description="Show recent administrative bot actions")
 @app_commands.describe(limit="Number of entries, from 1 to 20")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def audit(interaction: discord.Interaction, limit: int = 10):
@@ -2410,7 +2428,7 @@ async def audit(interaction: discord.Interaction, limit: int = 10):
     await interaction.response.send_message("**Recent audit log**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="permission_set", description="Require a Discord role for a command")
+@admin_group.command(name="permission_set", description="Require a Discord role for a command")
 @app_commands.describe(command="Command name without slash", role="Required role")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def permission_set(interaction: discord.Interaction, command: str, role: discord.Role):
@@ -2419,7 +2437,7 @@ async def permission_set(interaction: discord.Interaction, command: str, role: d
     await interaction.response.send_message(f"Configured **/{command.lstrip('/')}** to require {role.mention} (managers can still use it).")
 
 
-@bot.tree.command(name="backup_now", description="Create a database backup")
+@admin_group.command(name="backup_now", description="Create a database backup")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def backup_now(interaction: discord.Interaction):
     BACKUP_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -2429,7 +2447,7 @@ async def backup_now(interaction: discord.Interaction):
     await interaction.response.send_message(f"Created database backup `{destination.name}`.", ephemeral=True)
 
 
-@bot.tree.command(name="backup_restore", description="Restore a database backup by filename")
+@admin_group.command(name="backup_restore", description="Restore a database backup by filename")
 @app_commands.describe(filename="Backup filename from the backup folder")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_restore(interaction: discord.Interaction, filename: str):
@@ -2462,7 +2480,7 @@ async def temporary_channel_cleanup():
         bot.database.untrack_channel(row["channel_id"])
 
 
-@bot.tree.command(name="player_compare", description="Compare two player profiles")
+@player_group.command(name="player_compare", description="Compare two player profiles")
 @app_commands.describe(mode="Game mode", first="First player", second="Second player")
 @app_commands.choices(mode=mode_choices)
 async def player_compare(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.Member, second: discord.Member):
@@ -2475,7 +2493,7 @@ async def player_compare(interaction: discord.Interaction, mode: app_commands.Ch
     await interaction.response.send_message(f"**Player comparison — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="recent_form", description="Show a player's last five results")
+@player_group.command(name="recent_form", description="Show a player's last five results")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def recent_form(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2488,7 +2506,7 @@ async def recent_form(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**{member.display_name} recent form — {mode_label(mode.value)}**\n" + " · ".join(f"#{row['id']} {row['rating_delta']:+d}" for row in rows))
 
 
-@bot.tree.command(name="consistency", description="Show a player's performance consistency")
+@player_group.command(name="consistency", description="Show a player's performance consistency")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def consistency(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2503,7 +2521,7 @@ async def consistency(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**{member.display_name} consistency — {mode_label(mode.value)}**\nAverage Elo change: **{average:+.1f}** · Volatility: **{variance ** 0.5:.1f}** points")
 
 
-@bot.tree.command(name="personal_bests", description="Show a player's best recorded stat lines")
+@player_group.command(name="personal_bests", description="Show a player's best recorded stat lines")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
 async def personal_bests(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
@@ -2516,7 +2534,7 @@ async def personal_bests(interaction: discord.Interaction, mode: app_commands.Ch
     await interaction.response.send_message(f"**{member.display_name} personal bests — {mode_label(mode.value)}**\n{values}")
 
 
-@bot.tree.command(name="close_games", description="Show the closest recorded matches")
+@stats_group.command(name="close_games", description="Show the closest recorded matches")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def close_games(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -2533,7 +2551,7 @@ async def close_games(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**Closest recent games — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
-@bot.tree.command(name="comebacks", description="Show upset and comeback wins")
+@stats_group.command(name="comebacks", description="Show upset and comeback wins")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def comebacks(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -2547,7 +2565,7 @@ async def comebacks(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"**Comeback/upset wins — {mode_label(mode.value)}**\n" + ("\n".join(lines[:10]) or "No rating upsets recorded yet."))
 
 
-@bot.tree.command(name="rotation_set", description="Configure the server's map rotation")
+@maps_group.command(name="rotation_set", description="Configure the server's map rotation")
 @app_commands.describe(maps="Comma-separated map names")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def rotation_set(interaction: discord.Interaction, maps: str):
@@ -2559,13 +2577,13 @@ async def rotation_set(interaction: discord.Interaction, maps: str):
     await interaction.response.send_message(f"Map rotation set: {', '.join(map_list)}")
 
 
-@bot.tree.command(name="next_map", description="Get and advance the next map in rotation")
+@maps_group.command(name="next_map", description="Get and advance the next map in rotation")
 async def next_map(interaction: discord.Interaction):
     selected = bot.database.next_map(interaction.guild_id)
     await interaction.response.send_message(f"Next map: **{selected}**" if selected else "No map rotation configured. Use `/rotation_set` first.")
 
 
-@bot.tree.command(name="nickname_sync", description="Sync player nicknames with their Elo")
+@admin_group.command(name="nickname_sync", description="Sync player nicknames with their Elo")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_nicknames=True)
@@ -2586,7 +2604,7 @@ async def nickname_sync(interaction: discord.Interaction, mode: app_commands.Cho
     await interaction.response.send_message(f"Updated {updated} nickname(s) for {mode_label(mode.value)}.")
 
 
-@bot.tree.command(name="roles_cleanup", description="Remove outdated Elo tier roles")
+@admin_group.command(name="roles_cleanup", description="Remove outdated Elo tier roles")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_roles=True)
@@ -2607,13 +2625,13 @@ async def roles_cleanup(interaction: discord.Interaction, mode: app_commands.Cho
     await interaction.response.send_message(f"Removed {removed} outdated role assignment(s).")
 
 
-@bot.tree.command(name="health", description="Show bot and database health")
+@server_group.command(name="health", description="Show bot and database health")
 async def health(interaction: discord.Interaction):
     table_count = bot.database.connection.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
     await interaction.response.send_message(f"✅ Bot online\nDatabase: healthy\nRecorded matches: **{table_count}**\nDashboard: `http://<this-PC-IP>:{os.getenv('DASHBOARD_PORT', '5050')}`")
 
 
-@bot.tree.command(name="integrity", description="Check database integrity")
+@admin_group.command(name="integrity", description="Check database integrity")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def integrity(interaction: discord.Interaction):
     result = bot.database.connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -2621,7 +2639,7 @@ async def integrity(interaction: discord.Interaction):
     await interaction.response.send_message(f"Database integrity: **{result}**\nOrphaned stat rows: **{orphaned}**")
 
 
-@bot.tree.command(name="webhook_set", description="Configure a webhook for future announcements")
+@admin_group.command(name="webhook_set", description="Configure a webhook for future announcements")
 @app_commands.describe(url="Discord webhook URL")
 @app_commands.checks.has_permissions(manage_webhooks=True)
 async def webhook_set(interaction: discord.Interaction, url: str):
@@ -2632,7 +2650,7 @@ async def webhook_set(interaction: discord.Interaction, url: str):
     await interaction.response.send_message("Webhook saved for future bot notifications.", ephemeral=True)
 
 
-@bot.tree.command(name="dashboard_share", description="Create a public read-only dashboard link")
+@admin_group.command(name="dashboard_share", description="Create a public read-only dashboard link")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def dashboard_share(interaction: discord.Interaction):
     token = bot.database.create_share(interaction.guild_id, interaction.user.id)
@@ -2640,7 +2658,7 @@ async def dashboard_share(interaction: discord.Interaction):
     await interaction.response.send_message(f"Read-only dashboard link: `http://<this-PC-IP>:{port}/share/{token}`", ephemeral=True)
 
 
-@bot.tree.command(name="profile_set", description="Set your Xbox gamertag and searchable aliases")
+@player_group.command(name="profile_set", description="Set your Xbox gamertag and searchable aliases")
 @app_commands.describe(gamertag="Your Xbox gamertag", aliases="Optional comma-separated old or alternate names")
 async def profile_set(interaction: discord.Interaction, gamertag: str, aliases: str = ""):
     alias_list = [value.strip() for value in aliases.split(",") if value.strip() and value.strip().lower() != gamertag.strip().lower()]
@@ -2648,7 +2666,7 @@ async def profile_set(interaction: discord.Interaction, gamertag: str, aliases: 
     await interaction.response.send_message(f"Saved your gamertag as **{gamertag.strip()}**" + (f" with aliases: {', '.join(alias_list)}." if alias_list else "."), ephemeral=True)
 
 
-@bot.tree.command(name="teamhistory", description="Show the record and totals for an exact recurring team")
+@team_group.command(name="teamhistory", description="Show the record and totals for an exact recurring team")
 @app_commands.describe(mode="Game mode", team="Comma-separated mentions or IDs for the team")
 @app_commands.choices(mode=mode_choices)
 async def teamhistory(interaction: discord.Interaction, mode: app_commands.Choice[str], team: str):
@@ -2665,7 +2683,7 @@ async def teamhistory(interaction: discord.Interaction, mode: app_commands.Choic
     await interaction.response.send_message(f"**{mode_label(mode.value)} team history**\n{roster}\nRecord: **{row['wins']}-{row['losses']}** across **{row['games']}** games\nStats: " + " · ".join(f"{name.title()}: **{row[name]}**" for name in stat_names(mode.value)))
 
 
-@bot.tree.command(name="clips", description="Show the latest match replay and clip links")
+@match_group.command(name="clips", description="Show the latest match replay and clip links")
 @app_commands.describe(mode="Optional game mode", limit="Number of clips to show")
 @app_commands.choices(mode=mode_choices)
 async def clips(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 10):
@@ -2677,7 +2695,7 @@ async def clips(interaction: discord.Interaction, mode: app_commands.Choice[str]
     await interaction.response.send_message("**Match clip gallery**\n" + "\n\n".join(lines))
 
 
-@bot.tree.command(name="announcement_channel", description="Set the channel for scheduled leaderboard announcements")
+@admin_group.command(name="announcement_channel", description="Set the channel for scheduled leaderboard announcements")
 @app_commands.describe(channel="Announcement channel")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def announcement_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2685,7 +2703,7 @@ async def announcement_channel(interaction: discord.Interaction, channel: discor
     await interaction.response.send_message(f"Leaderboard announcements will use {channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="announcement_schedule", description="Schedule recurring leaderboard announcements")
+@admin_group.command(name="announcement_schedule", description="Schedule recurring leaderboard announcements")
 @app_commands.describe(mode="Game mode", interval_minutes="Minutes between announcements", metric="Ranking metric", channel="Optional destination channel")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
@@ -2702,7 +2720,7 @@ async def announcement_schedule(interaction: discord.Interaction, mode: app_comm
     await interaction.response.send_message(f"Created announcement schedule **#{schedule_id}** in {target.mention} every **{interval_minutes} minutes**.", ephemeral=True)
 
 
-@bot.tree.command(name="announcement_cancel", description="Cancel a scheduled leaderboard announcement")
+@admin_group.command(name="announcement_cancel", description="Cancel a scheduled leaderboard announcement")
 @app_commands.describe(schedule_id="Announcement schedule number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def announcement_cancel(interaction: discord.Interaction, schedule_id: int):
@@ -2712,7 +2730,7 @@ async def announcement_cancel(interaction: discord.Interaction, schedule_id: int
     await interaction.response.send_message(f"Cancelled announcement schedule **#{schedule_id}**.", ephemeral=True)
 
 
-@bot.tree.command(name="maintenance", description="Pause or resume match submissions")
+@admin_group.command(name="maintenance", description="Pause or resume match submissions")
 @app_commands.describe(enabled="Whether to pause non-admin match submissions")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def maintenance(interaction: discord.Interaction, enabled: bool):
@@ -2720,11 +2738,16 @@ async def maintenance(interaction: discord.Interaction, enabled: bool):
     await interaction.response.send_message(f"Match submission maintenance mode is now **{'ON' if enabled else 'OFF'}**.", ephemeral=True)
 
 
-@bot.tree.command(name="help_menu", description="Show commands grouped by use")
+@server_group.command(name="help_menu", description="Show commands grouped by use")
 async def help_menu(interaction: discord.Interaction):
     embed = discord.Embed(title="Gears 5 Elo commands", colour=discord.Colour.red())
-    names = sorted(command.name for command in bot.tree.get_commands())
-    lines = [f"`/{name}`" for name in names]
+    lines = []
+    for command in sorted(bot.tree.get_commands(), key=lambda item: item.name):
+        children = getattr(command, "commands", [])
+        if children:
+            lines.extend(f"`/{command.name} {child.name}`" for child in sorted(children, key=lambda item: item.name))
+        else:
+            lines.append(f"`/{command.name}`")
     chunks: list[str] = []
     current = ""
     for line in lines:
@@ -2740,7 +2763,7 @@ async def help_menu(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="lb", description="Alias for the player leaderboard")
+@stats_group.command(name="lb", description="Alias for the player leaderboard")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def lb(interaction: discord.Interaction, mode: app_commands.Choice[str]):
