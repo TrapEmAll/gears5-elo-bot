@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -374,6 +375,20 @@ class EloDatabase:
             (guild_id, user_id),
         ).fetchall()
 
+    def rating_history(self, guild_id: int, user_id: int, mode: str, limit: int = 50):
+        limit = max(1, min(limit, 100))
+        return self.connection.execute(
+            """
+            SELECT m.id, m.created_at, m.winner, s.rating_before, s.rating_delta,
+                   s.kills, s.deaths, s.assists, s.damage, s.score
+            FROM match_player_stats s
+            JOIN matches m ON m.id=s.match_id
+            WHERE s.guild_id=? AND s.user_id=? AND s.mode=?
+            ORDER BY m.id DESC LIMIT ?
+            """,
+            (guild_id, user_id, mode, limit),
+        ).fetchall()[::-1]
+
     def profile_rows(self, guild_id: int, user_id: int):
         return self.connection.execute(
             """
@@ -686,6 +701,53 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
         return
     lines = [f"{mode_label(row['mode'])}: **{row['rating']}** ({row['wins']}-{row['losses']})" for row in rows]
     await interaction.response.send_message(f"**{member.display_name}'s ratings**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="trend", description="Show a player's Elo and performance trend")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you", metric="Performance metric to chart")
+@app_commands.choices(mode=mode_choices)
+@app_commands.choices(metric=[
+    app_commands.Choice(name="Damage", value="damage"),
+    app_commands.Choice(name="Kills", value="kills"),
+    app_commands.Choice(name="Score", value="score"),
+])
+async def trend(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None, metric: app_commands.Choice[str] | None = None):
+    member = player or interaction.user
+    rows = bot.database.rating_history(interaction.guild_id, member.id, mode.value)
+    if not rows:
+        await interaction.response.send_message(f"<@{member.id}> has no recorded matches for **{mode_label(mode.value)}** yet.", ephemeral=True)
+        return
+
+    metric_name = metric.value if metric else "damage"
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        await interaction.response.send_message("Charts are unavailable because the plotting dependency is not installed. Run `python -m pip install -r requirements.txt` and restart the bot.", ephemeral=True)
+        return
+
+    match_numbers = list(range(1, len(rows) + 1))
+    ratings = [row["rating_before"] + row["rating_delta"] for row in rows]
+    performance = [row[metric_name] for row in rows]
+    figure, axis = plt.subplots(figsize=(8, 4.5))
+    axis.plot(match_numbers, ratings, marker="o", color="#d7263d", linewidth=2, label="Elo")
+    axis.set_xlabel("Match number")
+    axis.set_ylabel("Elo", color="#d7263d")
+    axis.grid(alpha=0.25)
+    performance_axis = axis.twinx()
+    performance_axis.plot(match_numbers, performance, marker="s", color="#1b998b", linewidth=2, label=metric_name.title())
+    performance_axis.set_ylabel(metric_name.title(), color="#1b998b")
+    figure.suptitle(f"{member.display_name} — {mode_label(mode.value)}")
+    figure.tight_layout()
+    image = BytesIO()
+    figure.savefig(image, format="png", dpi=140)
+    plt.close(figure)
+    image.seek(0)
+    await interaction.response.send_message(
+        f"**{member.display_name} — {mode_label(mode.value)} trend**\nShowing {len(rows)} matches. Elo: **{ratings[-1]}** · Average {metric_name}: **{sum(performance) / len(performance):.1f}**",
+        file=discord.File(image, filename="gears-elo-trend.png"),
+    )
 
 
 @bot.tree.command(name="profile", description="Show a complete player profile")

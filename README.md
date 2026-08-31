@@ -46,6 +46,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
 - `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.
 - `/rating` — show one player's ratings across modes.
+- `/trend` — upload an Elo trend chart with damage, kills, or score over time.
 - `/profile` — show a complete player profile with record and performance stats.
 - `/achievements` — show earned player badges.
 - Match completion — automatically posts an MVP, team score totals, and Elo changes.
