@@ -9,7 +9,7 @@ from pathlib import Path
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_size
@@ -160,6 +160,56 @@ class EloDatabase:
                 confirmed_by TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS availability (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS scheduled_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team_one TEXT NOT NULL,
+                team_two TEXT NOT NULL,
+                scheduled_at TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                notified INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS series (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team_one TEXT NOT NULL,
+                team_two TEXT NOT NULL,
+                target_wins INTEGER NOT NULL,
+                team_one_wins INTEGER NOT NULL DEFAULT 0,
+                team_two_wins INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS veto_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                team_one TEXT NOT NULL,
+                team_two TEXT NOT NULL,
+                maps TEXT NOT NULL,
+                banned TEXT NOT NULL DEFAULT '[]',
+                picked TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
@@ -259,6 +309,64 @@ class EloDatabase:
     def delete_pending_match(self, guild_id: int, pending_id: int):
         self.connection.execute("DELETE FROM pending_matches WHERE guild_id=? AND id=?", (guild_id, pending_id))
         self.connection.commit()
+
+    def audit(self, guild_id: int, actor_id: int, action: str, details: str):
+        self.connection.execute("INSERT INTO audit_log (guild_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (guild_id, actor_id, action, details))
+        self.connection.commit()
+
+    def set_availability(self, guild_id: int, user_id: int, status: str):
+        self.connection.execute("INSERT INTO availability (guild_id, user_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at", (guild_id, user_id, status, datetime.now(timezone.utc).isoformat()))
+        self.connection.commit()
+
+    def availability_rows(self, guild_id: int, status: str | None = None):
+        query = "SELECT user_id, status, updated_at FROM availability WHERE guild_id=?"
+        params: list[object] = [guild_id]
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        return self.connection.execute(query + " ORDER BY status, user_id", params).fetchall()
+
+    def create_schedule(self, guild_id: int, channel_id: int, mode: str, team_one: list[int], team_two: list[int], scheduled_at: str, created_by: int):
+        cursor = self.connection.execute("INSERT INTO scheduled_matches (guild_id, channel_id, mode, team_one, team_two, scheduled_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)", (guild_id, channel_id, mode, ",".join(map(str, team_one)), ",".join(map(str, team_two)), scheduled_at, created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def due_schedules(self):
+        return self.connection.execute("SELECT * FROM scheduled_matches WHERE notified=0 AND scheduled_at<=?", (datetime.now(timezone.utc).isoformat(),)).fetchall()
+
+    def mark_schedule_notified(self, schedule_id: int):
+        self.connection.execute("UPDATE scheduled_matches SET notified=1 WHERE id=?", (schedule_id,))
+        self.connection.commit()
+
+    def create_series(self, guild_id: int, mode: str, team_one: list[int], team_two: list[int], target_wins: int, created_by: int):
+        cursor = self.connection.execute("INSERT INTO series (guild_id, mode, team_one, team_two, target_wins, created_by) VALUES (?, ?, ?, ?, ?, ?)", (guild_id, mode, ",".join(map(str, team_one)), ",".join(map(str, team_two)), target_wins, created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def get_series(self, guild_id: int, series_id: int):
+        return self.connection.execute("SELECT * FROM series WHERE guild_id=? AND id=?", (guild_id, series_id)).fetchone()
+
+    def update_series(self, guild_id: int, series_id: int, winner: int):
+        column = "team_one_wins" if winner == 1 else "team_two_wins"
+        self.connection.execute(f"UPDATE series SET {column}={column}+1 WHERE guild_id=? AND id=? AND status='open'", (guild_id, series_id))
+        row = self.get_series(guild_id, series_id)
+        if row and max(row["team_one_wins"], row["team_two_wins"]) >= row["target_wins"]:
+            self.connection.execute("UPDATE series SET status='complete' WHERE guild_id=? AND id=?", (guild_id, series_id))
+        self.connection.commit()
+        return self.get_series(guild_id, series_id)
+
+    def create_veto(self, guild_id: int, mode: str, team_one: list[int], team_two: list[int], maps: list[str], created_by: int):
+        cursor = self.connection.execute("INSERT INTO veto_sessions (guild_id, mode, team_one, team_two, maps, created_by) VALUES (?, ?, ?, ?, ?, ?)", (guild_id, mode, ",".join(map(str, team_one)), ",".join(map(str, team_two)), json.dumps(maps), created_by))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def get_veto(self, guild_id: int, veto_id: int):
+        return self.connection.execute("SELECT * FROM veto_sessions WHERE guild_id=? AND id=?", (guild_id, veto_id)).fetchone()
+
+    def update_veto(self, guild_id: int, veto_id: int, banned: list[str], picked: str | None = None):
+        self.connection.execute("UPDATE veto_sessions SET banned=?, picked=?, status=? WHERE guild_id=? AND id=?", (json.dumps(banned), picked, "complete" if picked else "open", guild_id, veto_id))
+        self.connection.commit()
+        return self.get_veto(guild_id, veto_id)
 
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
         rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
@@ -403,11 +511,26 @@ class EloDatabase:
             (guild_id, user_id, mode),
         ).fetchone()
 
-    def leaderboard(self, guild_id: int, mode: str, limit: int = 10):
+    def leaderboard(self, guild_id: int, mode: str, metric: str = "rating", limit: int = 10):
+        allowed = {"rating": "r.rating", "wins": "r.wins", "winrate": "CAST(r.wins AS REAL) / NULLIF(r.games, 0)", "kills": "COALESCE(SUM(s.kills), 0)", "damage": "COALESCE(SUM(s.damage), 0)", "score": "COALESCE(SUM(s.score), 0)", "assists": "COALESCE(SUM(s.assists), 0)"}
+        order = allowed.get(metric, allowed["rating"])
         return self.connection.execute(
-            "SELECT user_id, rating, wins, losses, games FROM ratings WHERE guild_id=? AND mode=? ORDER BY rating DESC, wins DESC LIMIT ?",
+            f"SELECT r.user_id, r.rating, r.wins, r.losses, r.games, COALESCE(SUM(s.kills), 0) AS kills, COALESCE(SUM(s.damage), 0) AS damage, COALESCE(SUM(s.score), 0) AS score, COALESCE(SUM(s.assists), 0) AS assists FROM ratings r LEFT JOIN match_player_stats s ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode WHERE r.guild_id=? AND r.mode=? GROUP BY r.user_id, r.rating, r.wins, r.losses, r.games ORDER BY {order} DESC, r.wins DESC LIMIT ?",
             (guild_id, mode, limit),
         ).fetchall()
+
+    def rivalry(self, guild_id: int, mode: str, first_id: int, second_id: int):
+        return self.connection.execute(
+            """
+            SELECT SUM(CASE WHEN (m.winner=1 AND instr(','||m.team_one||',', ','||?||',')>0) OR (m.winner=2 AND instr(','||m.team_two||',', ','||?||',')>0) THEN 1 ELSE 0 END) AS first_wins,
+                   SUM(CASE WHEN (m.winner=1 AND instr(','||m.team_one||',', ','||?||',')>0) OR (m.winner=2 AND instr(','||m.team_two||',', ','||?||',')>0) THEN 1 ELSE 0 END) AS second_wins,
+                   COUNT(*) AS games
+            FROM matches m WHERE m.guild_id=? AND m.mode=?
+              AND ((instr(','||m.team_one||',', ','||?||',')>0 AND instr(','||m.team_two||',', ','||?||',')>0)
+                OR (instr(','||m.team_two||',', ','||?||',')>0 AND instr(','||m.team_one||',', ','||?||',')>0))
+            """,
+            (first_id, first_id, second_id, second_id, guild_id, mode, first_id, second_id, first_id, second_id),
+        ).fetchone()
 
     def streak_leaderboard(self, guild_id: int, mode: str, limit: int = 10):
         return self.connection.execute(
@@ -802,6 +925,7 @@ async def match_confirm(interaction: discord.Interaction, match_id: int):
     stats = {int(user_id): values for user_id, values in json.loads(row["stats_json"]).items()}
     changes = bot.database.record_match(interaction.guild_id, row["mode"], row["winner"], team_one, team_two, stats, row["created_by"], row["map_name"])
     bot.database.delete_pending_match(interaction.guild_id, match_id)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "match_recorded", f"pending match #{match_id}; mode={row['mode']}")
     change_text = " · ".join(f"<@{change.user_id}> {change.new_rating} ({change.delta:+d})" for change in changes)
     if interaction.guild:
         for change in changes:
@@ -839,16 +963,166 @@ async def match(interaction: discord.Interaction, mode: app_commands.Choice[str]
         return
 
 
-@bot.tree.command(name="leaderboard", description="Show the top ratings for a mode")
-@app_commands.describe(mode="Game mode")
+@bot.tree.command(name="rematch", description="Reuse teams from a prior match and enter a new result")
+@app_commands.describe(match_id="Previous match number", winner="Winner of the rematch")
+@app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+async def rematch(interaction: discord.Interaction, match_id: int, winner: app_commands.Choice[str]):
+    row = bot.database.match_history(interaction.guild_id, limit=100)
+    previous = next((item for item in row if item["id"] == match_id), None)
+    if not previous:
+        await interaction.response.send_message("That match was not found.", ephemeral=True)
+        return
+    first = [int(value) for value in previous["team_one"].split(",")]
+    second = [int(value) for value in previous["team_two"].split(",")]
+    await interaction.response.send_modal(PlayerStatsModal(previous["mode"], int(winner.value), first, second, first + second, {}, 0, previous["map_name"]))
+
+
+@bot.tree.command(name="availability", description="Set your availability for finding matches")
+@app_commands.describe(status="Your current availability")
+@app_commands.choices(status=[app_commands.Choice(name="Available", value="available"), app_commands.Choice(name="Busy", value="busy"), app_commands.Choice(name="Offline", value="offline")])
+async def availability(interaction: discord.Interaction, status: app_commands.Choice[str]):
+    bot.database.set_availability(interaction.guild_id, interaction.user.id, status.value)
+    bot.database.audit(interaction.guild_id, interaction.user.id, "availability", status.value)
+    await interaction.response.send_message(f"Set your status to **{status.value}**.")
+
+
+@bot.tree.command(name="available", description="List players by availability")
+async def available(interaction: discord.Interaction):
+    rows = bot.database.availability_rows(interaction.guild_id)
+    if not rows:
+        await interaction.response.send_message("Nobody has set an availability status yet.")
+        return
+    lines = [f"**{row['status'].title()}**: <@{row['user_id']}>" for row in rows]
+    await interaction.response.send_message("**Player availability**\n" + "\n".join(lines))
+
+
+@bot.tree.command(name="rivalry", description="Show the head-to-head record between two players")
+@app_commands.describe(mode="Game mode", first="First player", second="Second player")
 @app_commands.choices(mode=mode_choices)
-async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str]):
-    rows = bot.database.leaderboard(interaction.guild_id, mode.value)
+async def rivalry(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.Member, second: discord.Member):
+    row = bot.database.rivalry(interaction.guild_id, mode.value, first.id, second.id)
+    if not row or not row["games"]:
+        await interaction.response.send_message("Those players have not faced each other in that mode.")
+        return
+    await interaction.response.send_message(f"**{first.display_name} vs {second.display_name} — {mode_label(mode.value)}**\nGames: **{row['games']}**\n{first.mention}: **{row['first_wins']} wins**\n{second.mention}: **{row['second_wins']} wins**")
+
+
+@bot.tree.command(name="series_start", description="Start a best-of-3 or best-of-5 series")
+@app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", format="Series format")
+@app_commands.choices(mode=mode_choices, format=[app_commands.Choice(name="Best of 3", value="2"), app_commands.Choice(name="Best of 5", value="3")])
+async def series_start(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, format: app_commands.Choice[str]):
+    try:
+        first = parse_team(team_one, team_size(mode.value))
+        second = parse_team(team_two, team_size(mode.value))
+        if set(first) & set(second):
+            raise ValueError("A player cannot be on both teams")
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    series_id = bot.database.create_series(interaction.guild_id, mode.value, first, second, int(format.value), interaction.user.id)
+    await interaction.response.send_message(f"Started **BO{int(format.value) * 2 - 1} series #{series_id}** for {mode_label(mode.value)}. Use `/series_update series_id:{series_id} winner:Team 1` after each game.")
+
+
+@bot.tree.command(name="series_update", description="Add a game result to a series")
+@app_commands.describe(series_id="Series number", winner="Winning side")
+@app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+async def series_update(interaction: discord.Interaction, series_id: int, winner: app_commands.Choice[str]):
+    row = bot.database.update_series(interaction.guild_id, series_id, int(winner.value))
+    if not row:
+        await interaction.response.send_message("That open series was not found.", ephemeral=True)
+        return
+    status = "COMPLETE" if row["status"] == "complete" else "in progress"
+    await interaction.response.send_message(f"Series **#{series_id}** is **{status}**: Team 1 **{row['team_one_wins']}** — Team 2 **{row['team_two_wins']}**.")
+
+
+@bot.tree.command(name="series_status", description="Show a series score")
+@app_commands.describe(series_id="Series number")
+async def series_status(interaction: discord.Interaction, series_id: int):
+    row = bot.database.get_series(interaction.guild_id, series_id)
+    if not row:
+        await interaction.response.send_message("That series was not found.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"**Series #{series_id}** — {mode_label(row['mode'])}\nTeam 1: **{row['team_one_wins']}** · Team 2: **{row['team_two_wins']}** · {row['status'].title()}")
+
+
+@bot.tree.command(name="schedule", description="Schedule a match reminder")
+@app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", when="UTC ISO time, e.g. 2026-09-01T20:00:00+00:00")
+@app_commands.choices(mode=mode_choices)
+async def schedule(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, when: str):
+    try:
+        first = parse_team(team_one, team_size(mode.value))
+        second = parse_team(team_two, team_size(mode.value))
+        scheduled_at = datetime.fromisoformat(when.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        if datetime.fromisoformat(scheduled_at) <= datetime.now(timezone.utc):
+            raise ValueError("The scheduled time must be in the future")
+    except ValueError as error:
+        await interaction.response.send_message(f"Could not schedule match: {error}", ephemeral=True)
+        return
+    schedule_id = bot.database.create_schedule(interaction.guild_id, interaction.channel_id, mode.value, first, second, scheduled_at, interaction.user.id)
+    await interaction.response.send_message(f"⏰ Scheduled match **#{schedule_id}** for **{scheduled_at[:16].replace('T', ' ')} UTC**.")
+
+
+@bot.tree.command(name="veto_start", description="Start a map ban and pick session")
+@app_commands.describe(mode="Game mode", team_one="Team 1 players", team_two="Team 2 players", maps="Comma-separated map names")
+@app_commands.choices(mode=mode_choices)
+async def veto_start(interaction: discord.Interaction, mode: app_commands.Choice[str], team_one: str, team_two: str, maps: str):
+    try:
+        first = parse_team(team_one, team_size(mode.value))
+        second = parse_team(team_two, team_size(mode.value))
+        map_list = [item.strip() for item in maps.split(",") if item.strip()]
+        if len(map_list) < 2:
+            raise ValueError("Enter at least two maps")
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    veto_id = bot.database.create_veto(interaction.guild_id, mode.value, first, second, map_list, interaction.user.id)
+    await interaction.response.send_message(f"🗺️ Veto session **#{veto_id}** started with: {', '.join(map_list)}. Use `/veto_ban` or `/veto_pick`.")
+
+
+@bot.tree.command(name="veto_ban", description="Ban a map from a veto session")
+@app_commands.describe(veto_id="Veto session number", map_name="Map to ban")
+async def veto_ban(interaction: discord.Interaction, veto_id: int, map_name: str):
+    row = bot.database.get_veto(interaction.guild_id, veto_id)
+    if not row:
+        await interaction.response.send_message("That veto session was not found.", ephemeral=True)
+        return
+    maps = json.loads(row["maps"]); banned = json.loads(row["banned"]); map_name = map_name.strip()
+    if map_name not in maps or map_name in banned or row["picked"]:
+        await interaction.response.send_message("That map cannot be banned in this session.", ephemeral=True)
+        return
+    banned.append(map_name); bot.database.update_veto(interaction.guild_id, veto_id, banned)
+    remaining = [item for item in maps if item not in banned]
+    await interaction.response.send_message(f"Banned **{map_name}**. Remaining maps: {', '.join(remaining)}")
+
+
+@bot.tree.command(name="veto_pick", description="Pick the final map in a veto session")
+@app_commands.describe(veto_id="Veto session number", map_name="Map to pick")
+async def veto_pick(interaction: discord.Interaction, veto_id: int, map_name: str):
+    row = bot.database.get_veto(interaction.guild_id, veto_id)
+    if not row:
+        await interaction.response.send_message("That veto session was not found.", ephemeral=True)
+        return
+    maps = json.loads(row["maps"]); banned = json.loads(row["banned"]); map_name = map_name.strip()
+    if map_name not in maps or map_name in banned or row["picked"]:
+        await interaction.response.send_message("That map cannot be picked in this session.", ephemeral=True)
+        return
+    bot.database.update_veto(interaction.guild_id, veto_id, banned, map_name)
+    await interaction.response.send_message(f"✅ **{map_name}** selected for veto session **#{veto_id}**.")
+
+
+@bot.tree.command(name="leaderboard", description="Show the top ratings for a mode")
+@app_commands.describe(mode="Game mode", metric="Ranking metric")
+@app_commands.choices(mode=mode_choices)
+@app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
+async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str], metric: app_commands.Choice[str] | None = None):
+    metric_value = metric.value if metric else "rating"
+    rows = bot.database.leaderboard(interaction.guild_id, mode.value, metric_value)
     if not rows:
         await interaction.response.send_message(f"No matches have been recorded for **{mode_label(mode.value)}** yet.")
         return
-    lines = [f"{index}. <@{row['user_id']}> — **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {row['wins'] / row['games'] * 100:.0f}% win rate · {row['games']} games" for index, row in enumerate(rows, 1)]
-    await interaction.response.send_message(f"**{mode_label(mode.value)} leaderboard**\n" + "\n".join(lines))
+    values = {"rating": "rating", "wins": "wins", "winrate": "wins / games", "kills": "kills", "damage": "damage", "score": "score", "assists": "assists"}
+    lines = [f"{index}. <@{row['user_id']}> — **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {row['wins'] / row['games'] * 100:.0f}% win rate · {row[metric_value] if metric_value != 'winrate' else row['wins'] / row['games'] * 100:.1f} {values[metric_value]}" for index, row in enumerate(rows, 1)]
+    await interaction.response.send_message(f"**{mode_label(mode.value)} leaderboard — {values[metric_value]}**\n" + "\n".join(lines))
 
 
 @bot.tree.command(name="streaks", description="Show the current win-streak leaders for a mode")
@@ -1071,12 +1345,39 @@ async def undo(interaction: discord.Interaction):
     except (ValueError, sqlite3.Error) as error:
         await interaction.response.send_message(f"Could not undo match: {error}", ephemeral=True)
         return
+    bot.database.audit(interaction.guild_id, interaction.user.id, "match_undone", f"match #{removed['id']}; mode={removed['mode']}")
     await interaction.response.send_message(f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match` if needed.")
+
+
+@bot.tree.command(name="audit", description="Show recent administrative bot actions")
+@app_commands.describe(limit="Number of entries, from 1 to 20")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def audit(interaction: discord.Interaction, limit: int = 10):
+    limit = max(1, min(limit, 20))
+    rows = bot.database.connection.execute("SELECT actor_id, action, details, created_at FROM audit_log WHERE guild_id=? ORDER BY id DESC LIMIT ?", (interaction.guild_id, limit)).fetchall()
+    if not rows:
+        await interaction.response.send_message("No audit entries yet.")
+        return
+    lines = [f"{row['created_at'][:16]} — <@{row['actor_id']}> — **{row['action']}** — {row['details']}" for row in rows]
+    await interaction.response.send_message("**Recent audit log**\n" + "\n".join(lines))
+
+
+@tasks.loop(minutes=1)
+async def scheduled_reminders():
+    for row in bot.database.due_schedules():
+        channel = bot.get_channel(row["channel_id"])
+        if channel:
+            players = row["team_one"].split(",") + row["team_two"].split(",")
+            mentions = " ".join(f"<@{player_id}>" for player_id in players)
+            await channel.send(f"⏰ Match reminder — **{mode_label(row['mode'])}** is scheduled now. {mentions}")
+        bot.database.mark_schedule_notified(row["id"])
 
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}.")
+    if not scheduled_reminders.is_running():
+        scheduled_reminders.start()
 
 
 if __name__ == "__main__":

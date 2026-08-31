@@ -40,6 +40,13 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/challenge`, `/challenge_accept`, `/challenge_decline` — create and manage 1v1 challenges.
 - `/captain_set` — admin-only: assign a confirmation captain for a mode and team.
 - `/match_confirm`, `/match_cancel` — confirm or discard a submitted result before Elo is applied.
+- `/rematch` — reuse teams from a previous match.
+- `/series_start`, `/series_update`, `/series_status` — track BO3 and BO5 series.
+- `/availability`, `/available` — mark and view player availability.
+- `/schedule` — schedule a UTC match reminder.
+- `/rivalry` — show two players’ head-to-head record.
+- `/veto_start`, `/veto_ban`, `/veto_pick` — run a map veto and pick.
+- `/audit` — admin-only: show recent bot actions.
 - `/settings` — show Elo settings for a mode.
 - `/setelo` — admin-only: set starting rating and K-factor for a mode.
 - `/roles_setup` — admin-only: create Bronze, Silver, Gold, Onyx, and Master roles for a mode; the bot assigns them after matches.
@@ -47,7 +54,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/queue_join`, `/queue_leave`, `/queue` — join, leave, and view the per-mode matchmaking queue.
 - `/modes` — list supported modes.
 - `/match` — record a match. Enter players as comma-separated mentions or IDs; the bot then asks for each player's stats one at a time.
-- `/leaderboard` — show the top ten players for a mode with Elo, record, games, and win rate.
+- `/leaderboard` — show the top ten players by Elo, wins, win rate, kills, damage, score, or assists.
 - `/rating` — show one player's ratings across modes.
 - `/trend` — upload an Elo trend chart with damage, kills, or score over time.
 - `/profile` — show a complete player profile with record and performance stats.
