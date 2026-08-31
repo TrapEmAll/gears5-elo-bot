@@ -69,6 +69,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/permission_set` — admin-only: require a Discord role for selected commands.
 - `/backup_now`, `/backup_restore` — create and restore SQLite backups; automatic daily backups run while the bot is online.
 - Leaderboards now use embeds with a refresh button.
+- `start_dashboard.bat` — launch the local dashboard at `http://127.0.0.1:5000`; browse `/mode/<mode>` or `/player/<discord-user-id>` for more detail.
 - `/rating` — show one player's ratings across modes.
 - `/trend` — upload an Elo trend chart with damage, kills, or score over time.
 - `/profile` — show a complete player profile with record and performance stats.
