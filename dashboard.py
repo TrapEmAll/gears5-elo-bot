@@ -92,6 +92,11 @@ def leaderboard_api(mode: str):
     return jsonify([dict(row) for row in rows])
 
 
+@app.route("/api/leaderboards")
+def leaderboards_api():
+    return jsonify({mode: leaderboard_api(mode).json for mode in MODES})
+
+
 @app.route("/api/summary")
 def summary_api():
     return jsonify(dashboard_summary(requested_guild_id()))
@@ -149,6 +154,15 @@ def player_api(user_id: int):
     if not ratings and not profile:
         abort(404)
     return jsonify({"user_id": user_id, "profile": dict(profile[0]) if profile else {}, "ratings": [dict(row) for row in ratings], "totals": dict(totals)})
+
+
+@app.route("/api/players")
+def players_api():
+    term = request.args.get("q", "").strip()
+    guild_id = requested_guild_id()
+    clause, params = guild_clause(guild_id)
+    rows = query(f"SELECT user_id, gamertag, aliases FROM player_profiles WHERE {clause} AND (gamertag LIKE ? OR aliases LIKE ?) ORDER BY gamertag LIMIT 50", params + (f"%{term}%", f"%{term}%")) if term else []
+    return jsonify([dict(row) for row in rows])
 
 
 @app.route("/search")
