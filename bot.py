@@ -1095,7 +1095,9 @@ lobby_group = app_commands.Group(name="lobby", description="Match lobbies and ch
 server_group = app_commands.Group(name="server", description="Server tools and bot information")
 insights_group = app_commands.Group(name="insights", description="Additional match and player analytics")
 ops_group = app_commands.Group(name="ops", description="Server activity and operational summaries")
-for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group):
+reports_group = app_commands.Group(name="reports", description="Detailed server reports")
+tools_group = app_commands.Group(name="tools", description="Quick bot tools and diagnostics")
+for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group, reports_group, tools_group):
     bot.tree.add_command(_group)
 
 
@@ -3110,6 +3112,172 @@ async def ops_queue(interaction: discord.Interaction):
 @ops_group.command(name="commands", description="Show the bot's top-level command count")
 async def ops_commands(interaction: discord.Interaction):
     await send_response(interaction, f"This bot currently exposes **{len(bot.tree.get_commands())}** top-level slash-command groups.")
+
+
+def _report_count(table: str, guild_id: int) -> int:
+    return bot.database.connection.execute(f"SELECT COUNT(*) FROM {table} WHERE guild_id=?", (guild_id,)).fetchone()[0]
+
+
+def _report_stat(column: str, guild_id: int) -> int:
+    row = bot.database.connection.execute(
+        f"SELECT COALESCE(SUM({column}), 0) FROM match_player_stats WHERE guild_id=?", (guild_id,)
+    ).fetchone()
+    return row[0]
+
+
+def _register_report_command(name: str, description: str, callback):
+    async def command(interaction: discord.Interaction):
+        await callback(interaction)
+    command.__name__ = f"reports_{name}"
+    reports_group.add_command(app_commands.Command(name=name, description=description, callback=command))
+
+
+def _register_tool_command(name: str, description: str, callback):
+    async def command(interaction: discord.Interaction):
+        await callback(interaction)
+    command.__name__ = f"tools_{name}"
+    tools_group.add_command(app_commands.Command(name=name, description=description, callback=command))
+
+
+def _count_report(table: str, label: str):
+    async def callback(interaction):
+        await send_response(interaction, f"{label}: **{_report_count(table, interaction.guild_id)}**")
+    return callback
+
+
+for _name, _table, _label in (
+    ("match_count", "matches", "Recorded matches"), ("player_count", "player_profiles", "Player profiles"),
+    ("rating_count", "ratings", "Rating rows"), ("team_count", "team_performance", "Recurring teams"),
+    ("pending_count", "pending_matches", "Pending matches"), ("vote_count", "match_votes", "Match votes"),
+    ("season_count", "seasons", "Seasons"), ("tournament_count", "tournaments", "Tournaments"),
+    ("lobby_count", "lobby_sessions", "Lobbies"), ("series_count", "series", "Series"),
+    ("challenge_count", "challenges", "Challenges"),
+    ("preset_count", "team_presets", "Team presets"), ("veto_count", "veto_sessions", "Veto sessions"),
+    ("audit_count", "audit_log", "Audit entries"),
+):
+    _register_report_command(_name, f"Count { _label.lower() }", _count_report(_table, _label))
+
+
+for _name, _column, _label in (
+    ("total_kills", "kills", "Total kills"), ("total_deaths", "deaths", "Total deaths"),
+    ("total_damage", "damage", "Total damage"), ("total_score", "score", "Total score"),
+    ("total_assists", "assists", "Total assists"), ("total_captures", "captures", "Total captures"),
+    ("total_breaks", "breaks", "Total hill breaks"),
+):
+    async def _stat_callback(interaction, column=_column, label=_label):
+        await send_response(interaction, f"{label}: **{_report_stat(column, interaction.guild_id):,}**")
+    _register_report_command(_name, f"Show { _label.lower() }", _stat_callback)
+
+
+async def _report_latest(interaction):
+    row = bot.database.connection.execute("SELECT id, mode, winner, map_name, created_at FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No matches recorded yet." if not row else f"Latest match: **#{row['id']}** · {mode_label(row['mode'])} · Team {row['winner']} won · {row['map_name']} · {row['created_at'][:16]}")
+
+
+async def _report_oldest(interaction):
+    row = bot.database.connection.execute("SELECT id, mode, winner, map_name, created_at FROM matches WHERE guild_id=? ORDER BY id LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No matches recorded yet." if not row else f"Oldest match: **#{row['id']}** · {mode_label(row['mode'])} · Team {row['winner']} won · {row['map_name']} · {row['created_at'][:16]}")
+
+
+async def _report_activity_days(interaction):
+    days = bot.database.connection.execute("SELECT COUNT(DISTINCT substr(created_at, 1, 10)) FROM matches WHERE guild_id=?", (interaction.guild_id,)).fetchone()[0]
+    await send_response(interaction, f"Active match days: **{days}**")
+
+
+async def _report_mode_breakdown(interaction):
+    rows = bot.database.connection.execute("SELECT mode, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY mode ORDER BY games DESC", (interaction.guild_id,)).fetchall()
+    await send_response(interaction, "**Mode breakdown**\n" + ("\n".join(f"{mode_label(row['mode'])}: **{row['games']}**" for row in rows) if rows else "No matches recorded yet."))
+
+
+for _name, _description, _callback in (
+    ("latest", "Show the latest match", _report_latest), ("oldest", "Show the oldest match", _report_oldest),
+    ("activity_days", "Count days with recorded matches", _report_activity_days),
+    ("mode_breakdown", "Break down matches by mode", _report_mode_breakdown),
+):
+    _register_report_command(_name, _description, _callback)
+
+
+async def _tool_identity(interaction):
+    await send_response(interaction, f"Logged in as **{bot.user}**")
+
+
+async def _tool_guild_id(interaction):
+    await send_response(interaction, f"Server ID: **{interaction.guild_id}**")
+
+
+async def _tool_latency(interaction):
+    await send_response(interaction, f"Gateway latency: **{bot.latency * 1000:.0f} ms**")
+
+
+async def _tool_configured_modes(interaction):
+    await send_response(interaction, "Configured modes: " + ", ".join(mode_label(mode) for mode in MODES))
+
+
+async def _tool_current_season(interaction):
+    season = bot.database.active_season(interaction.guild_id)
+    await send_response(interaction, f"Active season: **{season['name'] if season else 'None'}**")
+
+
+async def _tool_database(interaction):
+    await send_response(interaction, f"Database: **{DATABASE_PATH.resolve()}** · Size: **{DATABASE_PATH.stat().st_size:,} bytes**")
+
+
+async def _tool_backup_count(interaction):
+    files = list(BACKUP_DIRECTORY.glob("*.sqlite3")) if BACKUP_DIRECTORY.is_dir() else []
+    await send_response(interaction, f"Database backups: **{len(files)}**")
+
+
+async def _tool_queue_size(interaction):
+    total = sum(len(players) for (guild_id, _), players in queues.items() if guild_id == interaction.guild_id)
+    await send_response(interaction, f"Queued players: **{total}**")
+
+
+async def _tool_server_settings(interaction):
+    row = bot.database.connection.execute("SELECT * FROM elo_settings WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "Elo settings configured." if row else "Using default Elo settings.")
+
+
+async def _tool_command_groups(interaction):
+    await send_response(interaction, f"Top-level command groups: **{len(bot.tree.get_commands())}**")
+
+
+async def _tool_sqlite_version(interaction):
+    version = bot.database.connection.execute("SELECT sqlite_version()").fetchone()[0]
+    await send_response(interaction, f"SQLite version: **{version}**")
+
+
+async def _tool_uptime(interaction):
+    await send_response(interaction, "Bot process is online and ready.")
+
+
+async def _tool_latest_backup(interaction):
+    files = list(BACKUP_DIRECTORY.glob("*.sqlite3")) if BACKUP_DIRECTORY.is_dir() else []
+    latest = max(files, key=lambda path: path.stat().st_mtime) if files else None
+    await send_response(interaction, f"Latest backup: **{latest.name}**" if latest else "No backups found.")
+
+
+async def _tool_database_tables(interaction):
+    count = bot.database.connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+    await send_response(interaction, f"Database tables: **{count}**")
+
+
+for _name, _description, _callback in (
+    ("identity", "Show the bot identity", _tool_identity), ("guild_id", "Show this server ID", _tool_guild_id),
+    ("latency", "Show gateway latency", _tool_latency), ("configured_modes", "List configured modes", _tool_configured_modes),
+    ("current_season", "Show the active season", _tool_current_season), ("database", "Show database path", _tool_database),
+    ("database_size", "Show database size", _tool_database), ("backup_count", "Count database backups", _tool_backup_count),
+    ("queue_size", "Count queued players", _tool_queue_size), ("scheduled_count", "Count scheduled matches", _count_report("scheduled_matches", "Scheduled matches")),
+    ("announcement_count", "Count announcements", _count_report("announcement_schedules", "Announcements")),
+    ("availability_count", "Count availability entries", _count_report("availability", "Availability entries")),
+    ("open_series", "Count active series", _count_report("series", "Series")), ("open_lobbies", "Count lobbies", _count_report("lobby_sessions", "Lobbies")),
+    ("open_tournaments", "Count tournaments", _count_report("tournaments", "Tournaments")), ("open_challenges", "Count challenges", _count_report("challenges", "Challenges")),
+    ("open_vetoes", "Count veto sessions", _count_report("veto_sessions", "Veto sessions")), ("audit_count", "Count audit entries", _count_report("audit_log", "Audit entries")),
+    ("server_settings", "Check server settings", _tool_server_settings), ("elo_settings", "Check Elo settings", _tool_server_settings),
+    ("command_groups", "Count command groups", _tool_command_groups), ("sqlite_version", "Show SQLite version", _tool_sqlite_version),
+    ("uptime", "Check bot readiness", _tool_uptime), ("latest_backup", "Show latest backup", _tool_latest_backup),
+    ("database_tables", "Count database tables", _tool_database_tables),
+):
+    _register_tool_command(_name, _description, _callback)
 
 
 @bot.event
