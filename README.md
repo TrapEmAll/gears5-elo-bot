@@ -54,6 +54,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/tools ...` — 25 quick diagnostics for identity, latency, settings, queues, schedules, backups, SQLite, and database health.
 
 The bot now exposes 17 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+
+The LAN dashboard includes all-mode and per-mode leaderboards, summary cards, player stat pages, player search, mode/player totals, and JSON endpoints at `/api/summary`, `/api/matches`, and `/api/leaderboard/<mode>`. Set `DASHBOARD_GUILD_ID` in `.env` when the database contains more than one Discord server and the dashboard should show only one server.
 - `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
 - Match completion automatically posts an MVP, team score totals, and Elo changes. Leaderboards use embeds with a refresh button.
 

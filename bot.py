@@ -389,6 +389,15 @@ class EloDatabase:
             self.connection.execute("ALTER TABLE elo_settings ADD COLUMN rating_floor INTEGER NOT NULL DEFAULT 0")
         if "provisional_games" not in settings_columns:
             self.connection.execute("ALTER TABLE elo_settings ADD COLUMN provisional_games INTEGER NOT NULL DEFAULT 5")
+        self.connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_matches_guild_mode ON matches(guild_id, mode, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_stats_guild_user_mode ON match_player_stats(guild_id, user_id, mode);
+            CREATE INDEX IF NOT EXISTS idx_stats_guild_mode ON match_player_stats(guild_id, mode);
+            CREATE INDEX IF NOT EXISTS idx_ratings_guild_mode_rating ON ratings(guild_id, mode, rating DESC);
+            CREATE INDEX IF NOT EXISTS idx_profiles_guild_gamertag ON player_profiles(guild_id, gamertag);
+            """
+        )
         self.connection.execute("PRAGMA user_version = 2")
         self.connection.commit()
 
