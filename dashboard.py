@@ -72,9 +72,11 @@ def mode_page(mode: str):
         abort(404)
     guild_id = requested_guild_id()
     clause, params = guild_clause(guild_id)
-    rows = query(f"SELECT r.user_id, COALESCE(NULLIF(p.gamertag,''), CAST(r.user_id AS TEXT)) AS display_name, r.rating, r.wins, r.losses, r.games FROM ratings r LEFT JOIN player_profiles p ON p.guild_id=r.guild_id AND p.user_id=r.user_id WHERE {clause.replace('guild_id', 'r.guild_id')} AND r.mode=? ORDER BY r.rating DESC LIMIT 50", params + (mode,))
+    sort = request.args.get("sort", "rating")
+    order = {"rating": "r.rating", "wins": "r.wins", "games": "r.games"}.get(sort, "r.rating")
+    rows = query(f"SELECT r.user_id, COALESCE(NULLIF(p.gamertag,''), CAST(r.user_id AS TEXT)) AS display_name, r.rating, r.wins, r.losses, r.games FROM ratings r LEFT JOIN player_profiles p ON p.guild_id=r.guild_id AND p.user_id=r.user_id WHERE {clause.replace('guild_id', 'r.guild_id')} AND r.mode=? ORDER BY {order} DESC, r.user_id LIMIT 50", params + (mode,))
     totals = query(f"SELECT COALESCE(SUM(kills),0) kills, COALESCE(SUM(deaths),0) deaths, COALESCE(SUM(assists),0) assists, COALESCE(SUM(captures),0) captures, COALESCE(SUM(breaks),0) breaks, COALESCE(SUM(damage),0) damage, COALESCE(SUM(score),0) score FROM match_player_stats WHERE {clause} AND mode=?", params + (mode,))[0]
-    return render_template_string(PAGE + """<div class=card><h2>{{ label }} leaderboard</h2><div class=metrics>{% for key in ["kills", "deaths", "assists", "captures", "breaks", "damage", "score"] %}<div class=metric><small>Total {{ key }}</small><strong>{{ "{:,}".format(totals[key]) }}</strong></div>{% endfor %}</div>{% if rows %}<table><tr><th>#</th><th>Player</th><th>Discord ID</th><th>Elo</th><th>Record</th><th>Games</th></tr>{% for row in rows %}<tr><td>{{ loop.index }}</td><td><a href="/player/{{ row.user_id }}">{{ row.display_name }}</a></td><td>{{ row.user_id }}</td><td>{{ row.rating }}</td><td>{{ row.wins }}-{{ row.losses }}</td><td>{{ row.games }}</td></tr>{% endfor %}</table>{% else %}<p>No matches recorded for this mode.</p>{% endif %}</div>""", rows=rows, totals=totals, label=MODES[mode], modes=MODES, refresh_seconds=REFRESH_SECONDS)
+    return render_template_string(PAGE + """<div class=card><h2>{{ label }} leaderboard</h2><form><label>Sort by: <select name=sort onchange="this.form.submit()"><option value=rating {% if sort == 'rating' %}selected{% endif %}>Elo</option><option value=wins {% if sort == 'wins' %}selected{% endif %}>Wins</option><option value=games {% if sort == 'games' %}selected{% endif %}>Games</option></select></label></form><div class=metrics>{% for key in ["kills", "deaths", "assists", "captures", "breaks", "damage", "score"] %}<div class=metric><small>Total {{ key }}</small><strong>{{ "{:,}".format(totals[key]) }}</strong></div>{% endfor %}</div>{% if rows %}<table><tr><th>#</th><th>Player</th><th>Discord ID</th><th>Elo</th><th>Record</th><th>Games</th></tr>{% for row in rows %}<tr><td>{{ loop.index }}</td><td><a href="/player/{{ row.user_id }}">{{ row.display_name }}</a></td><td>{{ row.user_id }}</td><td>{{ row.rating }}</td><td>{{ row.wins }}-{{ row.losses }}</td><td>{{ row.games }}</td></tr>{% endfor %}</table>{% else %}<p>No matches recorded for this mode.</p>{% endif %}</div>""", rows=rows, totals=totals, label=MODES[mode], sort=sort, modes=MODES, refresh_seconds=REFRESH_SECONDS)
 
 
 @app.route("/api/leaderboard/<mode>")
@@ -122,6 +124,16 @@ def modes_api():
     clause, params = guild_clause(guild_id)
     rows = query(f"SELECT mode, COUNT(*) AS matches FROM matches WHERE {clause} GROUP BY mode ORDER BY matches DESC", params)
     return jsonify([{**dict(row), "label": MODES.get(row["mode"], row["mode"])} for row in rows])
+
+
+@app.route("/api/stats/<mode>")
+def mode_stats_api(mode: str):
+    if mode not in MODES:
+        abort(404)
+    guild_id = requested_guild_id()
+    clause, params = guild_clause(guild_id)
+    row = query(f"SELECT COUNT(DISTINCT match_id) matches, COUNT(DISTINCT user_id) players, COALESCE(SUM(kills),0) kills, COALESCE(SUM(deaths),0) deaths, COALESCE(SUM(assists),0) assists, COALESCE(SUM(captures),0) captures, COALESCE(SUM(breaks),0) breaks, COALESCE(SUM(damage),0) damage, COALESCE(SUM(score),0) score FROM match_player_stats WHERE {clause} AND mode=?", params + (mode,))[0]
+    return jsonify({"mode": mode, "label": MODES[mode], **dict(row)})
 
 
 @app.route("/api/match/<int:match_id>")
