@@ -48,8 +48,10 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/challenge create`, `/challenge accept`, `/challenge decline` — manage challenges.
 - `/admin settings`, `/admin setelo`, `/admin roles_setup`, `/admin roles_cleanup`, `/admin nickname_sync`, `/admin backup_now`, `/admin backup_restore`, `/admin integrity`, `/admin permission_set`, `/admin webhook_set`, `/admin dashboard_share`, `/admin announcement_channel`, `/admin announcement_schedule`, `/admin announcement_cancel`, `/admin maintenance`, `/admin note_add`, `/admin notes`, `/admin note_delete`, `/admin achievement_create`, `/admin captain_set`, `/admin audit` — administrator tools.
 - `/server modes`, `/server health`, `/server help_menu` — bot and server information.
+- `/insights overview`, `/insights top_damage`, `/insights top_kills`, `/insights top_score`, `/insights top_assists`, `/insights top_captures`, `/insights top_breaks`, `/insights kd`, `/insights winrate`, `/insights peak`, `/insights recent`, `/insights lastmatch`, `/insights maps`, `/insights teams`, `/insights pending` — additional performance and match analytics.
+- `/ops summary`, `/ops players`, `/ops activity`, `/ops database`, `/ops backups`, `/ops seasons`, `/ops teams`, `/ops maps`, `/ops pending`, `/ops lobbies`, `/ops tournaments`, `/ops series`, `/ops challenges`, `/ops queue`, `/ops commands` — server operational summaries.
 
-The bot now exposes 13 top-level commands instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+The bot now exposes 15 top-level commands instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
 - `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
 - Match completion automatically posts an MVP, team score totals, and Elo changes. Leaderboards use embeds with a refresh button.
 

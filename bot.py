@@ -1093,7 +1093,9 @@ challenge_group = app_commands.Group(name="challenge", description="Player chall
 series_group = app_commands.Group(name="series", description="Track best-of series")
 lobby_group = app_commands.Group(name="lobby", description="Match lobbies and check-ins")
 server_group = app_commands.Group(name="server", description="Server tools and bot information")
-for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group):
+insights_group = app_commands.Group(name="insights", description="Additional match and player analytics")
+ops_group = app_commands.Group(name="ops", description="Server activity and operational summaries")
+for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group):
     bot.tree.add_command(_group)
 
 
@@ -2874,6 +2876,240 @@ async def scheduled_announcements():
                 values = "\n".join(f"**{index}.** <@{item['user_id']}> — {item['rating']} Elo · {item['wins']}-{item['losses']}" for index, item in enumerate(rows, 1))
                 await channel.send(f"📊 **{mode_label(row['mode'])} leaderboard** — sorted by **{metric}**\n{values}")
         bot.database.advance_announcement(row["id"], row["interval_minutes"])
+
+
+async def _send_metric_leaders(interaction: discord.Interaction, mode: app_commands.Choice[str], metric: str, label: str):
+    rows = bot.database.connection.execute(
+        f"SELECT user_id, SUM({metric}) AS value FROM match_player_stats WHERE guild_id=? AND mode=? GROUP BY user_id ORDER BY value DESC LIMIT 10",
+        (interaction.guild_id, mode.value),
+    ).fetchall()
+    if not rows:
+        await send_response(interaction, f"No **{label}** data is recorded for **{mode_label(mode.value)}** yet.")
+        return
+    lines = [f"**{index}.** <@{row['user_id']}> — **{row['value']}** {label}" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Top {label} — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
+@insights_group.command(name="overview", description="Show a compact overview of a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_overview(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    row = bot.database.connection.execute(
+        "SELECT COUNT(*) AS matches, COUNT(DISTINCT s.user_id) AS players, COALESCE(SUM(s.damage), 0) AS damage, COALESCE(SUM(s.kills), 0) AS kills FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE m.guild_id=? AND m.mode=?",
+        (interaction.guild_id, mode.value),
+    ).fetchone()
+    await send_response(interaction, f"**{mode_label(mode.value)} overview**\nMatches: **{row['matches']}** · Players: **{row['players']}**\nTotal kills: **{row['kills']}** · Total damage: **{row['damage']}**")
+
+
+@insights_group.command(name="top_damage", description="Rank players by total damage")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_damage(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "damage", "damage")
+
+
+@insights_group.command(name="top_kills", description="Rank players by total kills")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_kills(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "kills", "kills")
+
+
+@insights_group.command(name="top_score", description="Rank players by total score")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_score(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "score", "score")
+
+
+@insights_group.command(name="top_assists", description="Rank players by total assists")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_assists(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "assists", "assists")
+
+
+@insights_group.command(name="top_captures", description="Rank Control players by captures")
+@app_commands.describe(mode="Control mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_captures(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "captures", "captures")
+
+
+@insights_group.command(name="top_breaks", description="Rank Control players by hill breaks")
+@app_commands.describe(mode="Control mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_top_breaks(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await _send_metric_leaders(interaction, mode, "breaks", "breaks")
+
+
+@insights_group.command(name="kd", description="Rank players by kill/death ratio")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_kd(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.connection.execute("SELECT user_id, SUM(kills) AS kills, SUM(deaths) AS deaths FROM match_player_stats WHERE guild_id=? AND mode=? GROUP BY user_id ORDER BY CAST(kills AS REAL) / MAX(deaths, 1) DESC LIMIT 10", (interaction.guild_id, mode.value)).fetchall()
+    lines = [f"**{index}.** <@{row['user_id']}> — **{row['kills'] / max(row['deaths'], 1):.2f} K/D** ({row['kills']}-{row['deaths']})" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Kill/death leaders — {mode_label(mode.value)}**\n" + ("\n".join(lines) if lines else "No data yet."))
+
+
+@insights_group.command(name="winrate", description="Rank players by win rate")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_winrate(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.leaderboard(interaction.guild_id, mode.value, "winrate", 10)
+    lines = [f"**{index}.** <@{row['user_id']}> — **{row['wins'] / max(row['games'], 1) * 100:.1f}%** ({row['wins']}-{row['losses']})" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Win-rate leaders — {mode_label(mode.value)}**\n" + ("\n".join(lines) if lines else "No ratings yet."))
+
+
+@insights_group.command(name="peak", description="Show a player's peak Elo")
+@app_commands.describe(player="Player")
+async def insights_peak(interaction: discord.Interaction, player: discord.Member):
+    rows = bot.database.profile_rows(interaction.guild_id, player.id)
+    if not rows:
+        await send_response(interaction, f"{player.mention} has no recorded ratings yet.")
+        return
+    best = max(rows, key=lambda row: row["peak_rating"])
+    await send_response(interaction, f"**{player.display_name} peak Elo**\n{mode_label(best['mode'])}: **{best['peak_rating']}** (current: {best['rating']})")
+
+
+@insights_group.command(name="recent", description="Show the latest results in a mode")
+@app_commands.describe(mode="Optional game mode", limit="Number of matches")
+@app_commands.choices(mode=mode_choices)
+async def insights_recent(interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None, limit: int = 5):
+    rows = bot.database.match_history(interaction.guild_id, mode.value if mode else None, max(1, min(limit, 10)))
+    lines = [f"**#{row['id']}** {mode_label(row['mode'])} — Team {row['winner']} won ({row['map_name']})" for row in rows]
+    await send_response(interaction, "**Recent results**\n" + ("\n".join(lines) if lines else "No matches recorded yet."))
+
+
+@insights_group.command(name="lastmatch", description="Show the latest recorded match")
+async def insights_lastmatch(interaction: discord.Interaction):
+    rows = bot.database.match_history(interaction.guild_id, limit=1)
+    if not rows:
+        await send_response(interaction, "No matches recorded yet.")
+        return
+    row = rows[0]
+    await send_response(interaction, f"**Latest match #{row['id']}**\nMode: **{mode_label(row['mode'])}** · Map: **{row['map_name']}** · Team **{row['winner']}** won")
+
+
+@insights_group.command(name="maps", description="Rank maps by match count")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_maps(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.map_stats(interaction.guild_id, mode.value)
+    lines = [f"**{index}.** {row['map_name']} — {row['games']} games ({row['team_one_wins']}-{row['team_two_wins']})" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Map rankings — {mode_label(mode.value)}**\n" + ("\n".join(lines) if lines else "No map data yet."))
+
+
+@insights_group.command(name="teams", description="Rank recurring teams by wins")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_teams(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.team_leaderboard(interaction.guild_id, mode.value, 10)
+    lines = [f"**{index}.** {' + '.join(f'<@{value}>' for value in row['team_key'].split(','))} — {row['wins']}-{row['losses']} ({row['games']} games)" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Team rankings — {mode_label(mode.value)}**\n" + ("\n".join(lines) if lines else "No recurring teams yet."))
+
+
+@insights_group.command(name="pending", description="List pending match confirmations")
+async def insights_pending(interaction: discord.Interaction):
+    rows = bot.database.connection.execute("SELECT id, mode, winner, confirmed_by FROM pending_matches WHERE guild_id=? ORDER BY id DESC LIMIT 15", (interaction.guild_id,)).fetchall()
+    lines = [f"**#{row['id']}** {mode_label(row['mode'])} — Team {row['winner']} · {len(json.loads(row['confirmed_by']))}/2 confirmations" for row in rows]
+    await send_response(interaction, "**Pending matches**\n" + ("\n".join(lines) if lines else "No pending matches."))
+
+
+def _ops_count(table: str, guild_id: int) -> int:
+    return bot.database.connection.execute(f"SELECT COUNT(*) FROM {table} WHERE guild_id=?", (guild_id,)).fetchone()[0]
+
+
+@ops_group.command(name="summary", description="Show server-wide bot and match totals")
+async def ops_summary(interaction: discord.Interaction):
+    matches = _ops_count("matches", interaction.guild_id)
+    players = bot.database.connection.execute("SELECT COUNT(DISTINCT user_id) FROM ratings WHERE guild_id=?", (interaction.guild_id,)).fetchone()[0]
+    await send_response(interaction, f"**Server summary**\nRecorded matches: **{matches}** · Rated players: **{players}** · Modes: **{len(MODES)}**")
+
+
+@ops_group.command(name="players", description="Count rated and profiled players")
+async def ops_players(interaction: discord.Interaction):
+    rated = bot.database.connection.execute("SELECT COUNT(DISTINCT user_id) FROM ratings WHERE guild_id=?", (interaction.guild_id,)).fetchone()[0]
+    profiled = _ops_count("player_profiles", interaction.guild_id)
+    await send_response(interaction, f"**Player counts**\nRated players: **{rated}** · Profiles: **{profiled}**")
+
+
+@ops_group.command(name="activity", description="Show recent server match activity")
+async def ops_activity(interaction: discord.Interaction):
+    rows = bot.database.connection.execute("SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY day ORDER BY day DESC LIMIT 7", (interaction.guild_id,)).fetchall()
+    await send_response(interaction, "**Recent activity**\n" + ("\n".join(f"{row['day']} — **{row['games']}** matches" for row in rows) if rows else "No match activity yet."))
+
+
+@ops_group.command(name="database", description="Show database record counts")
+async def ops_database(interaction: discord.Interaction):
+    counts = [f"{table}: **{_ops_count(table, interaction.guild_id)}**" for table in ("matches", "ratings", "team_performance", "pending_matches", "audit_log")]
+    await send_response(interaction, "**Database summary**\n" + " · ".join(counts))
+
+
+@ops_group.command(name="backups", description="Show available database backups")
+async def ops_backups(interaction: discord.Interaction):
+    files = list(BACKUP_DIRECTORY.glob("*.sqlite3")) if BACKUP_DIRECTORY.is_dir() else []
+    await send_response(interaction, f"Available database backups: **{len(files)}**")
+
+
+@ops_group.command(name="seasons", description="Show season status and count")
+async def ops_seasons(interaction: discord.Interaction):
+    active = bot.database.active_season(interaction.guild_id)
+    total = _ops_count("seasons", interaction.guild_id)
+    await send_response(interaction, f"Seasons created: **{total}**\nActive season: **{active['name'] if active else 'None'}**")
+
+
+@ops_group.command(name="teams", description="Count saved and recurring teams")
+async def ops_teams(interaction: discord.Interaction):
+    presets = _ops_count("team_presets", interaction.guild_id)
+    recurring = _ops_count("team_performance", interaction.guild_id)
+    await send_response(interaction, f"Saved presets: **{presets}** · Recurring teams: **{recurring}**")
+
+
+@ops_group.command(name="maps", description="Show map rotation status")
+async def ops_maps(interaction: discord.Interaction):
+    row = bot.database.connection.execute("SELECT maps, position FROM map_rotation WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    if not row:
+        await send_response(interaction, "No custom map rotation is configured.")
+        return
+    maps = json.loads(row["maps"])
+    await send_response(interaction, f"Map rotation: **{len(maps)}** maps · Next position: **{row['position'] + 1}**")
+
+
+@ops_group.command(name="pending", description="Count pending matches and votes")
+async def ops_pending(interaction: discord.Interaction):
+    await send_response(interaction, f"Pending matches: **{_ops_count('pending_matches', interaction.guild_id)}** · Votes: **{_ops_count('match_votes', interaction.guild_id)}**")
+
+
+@ops_group.command(name="lobbies", description="Count match lobbies")
+async def ops_lobbies(interaction: discord.Interaction):
+    await send_response(interaction, f"Match lobbies: **{_ops_count('lobby_sessions', interaction.guild_id)}**")
+
+
+@ops_group.command(name="tournaments", description="Count tournaments and registrations")
+async def ops_tournaments(interaction: discord.Interaction):
+    await send_response(interaction, f"Tournaments: **{_ops_count('tournaments', interaction.guild_id)}** · Registrations: **{bot.database.connection.execute('SELECT COUNT(*) FROM tournament_entries e JOIN tournaments t ON t.id=e.tournament_id WHERE t.guild_id=?', (interaction.guild_id,)).fetchone()[0]}**")
+
+
+@ops_group.command(name="series", description="Count best-of series")
+async def ops_series(interaction: discord.Interaction):
+    await send_response(interaction, f"Best-of series: **{_ops_count('series', interaction.guild_id)}**")
+
+
+@ops_group.command(name="challenges", description="Count player challenges")
+async def ops_challenges(interaction: discord.Interaction):
+    await send_response(interaction, f"Player challenges: **{_ops_count('challenges', interaction.guild_id)}**")
+
+
+@ops_group.command(name="queue", description="Show current in-memory matchmaking queues")
+async def ops_queue(interaction: discord.Interaction):
+    rows = [f"{mode_label(mode)}: **{len(players)}**" for (guild_id, mode), players in queues.items() if guild_id == interaction.guild_id]
+    await send_response(interaction, "**Matchmaking queues**\n" + ("\n".join(rows) if rows else "All queues are empty."))
+
+
+@ops_group.command(name="commands", description="Show the bot's top-level command count")
+async def ops_commands(interaction: discord.Interaction):
+    await send_response(interaction, f"This bot currently exposes **{len(bot.tree.get_commands())}** top-level slash-command groups.")
 
 
 @bot.event
