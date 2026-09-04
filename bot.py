@@ -1231,12 +1231,23 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     figure, axis = plt.subplots(figsize=(14, 8), facecolor="#111318")
     axis.set_facecolor("#111318")
     axis.axis("off")
+    background_path = Path(__file__).with_name("assets") / "gears-background.jpg"
+    if background_path.exists():
+        background = plt.imread(background_path)
+        axis.imshow(background, extent=[0, 1, 0, 1], transform=axis.transAxes, aspect="auto", zorder=0)
+        axis.add_patch(plt.Rectangle((0, 0), 1, 1, transform=axis.transAxes, facecolor="#090b10", alpha=0.72, zorder=1))
+    axis.set_zorder(2)
     figure.text(0.05, 0.93, "GEARS 5", color="#d7263d", fontsize=28, fontweight="bold", family="sans-serif")
     figure.text(0.05, 0.875, "PRIVATE MATCH REPORT", color="#f2f2f2", fontsize=18, fontweight="bold")
     figure.text(0.95, 0.93, f"MATCH #{match['id']}", color="#aeb4bf", fontsize=16, ha="right", fontweight="bold")
     figure.text(0.05, 0.82, f"{mode_label(match['mode'])}   •   {match['map_name']}", color="#d7dbe2", fontsize=15)
     figure.text(0.95, 0.82, f"TEAM {match['winner']} WINS", color="#d7263d", fontsize=15, ha="right", fontweight="bold")
-    table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", bbox=[0.03, 0.12, 0.94, 0.61])
+    name_width = 0.34 if len(display_columns) > 8 else 0.42
+    team_width = 0.06
+    elo_width = 0.10
+    stat_width = (1 - name_width - team_width - elo_width) / len(stat_columns)
+    column_widths = [name_width, team_width] + [stat_width] * len(stat_columns) + [elo_width]
+    table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", colWidths=column_widths, bbox=[0.03, 0.12, 0.94, 0.61])
     table.auto_set_font_size(False)
     table.set_fontsize(11)
     table.scale(1, 1.65)
@@ -1248,9 +1259,11 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
         else:
             cell.set_facecolor("#20242c" if row_index % 2 else "#171a20")
             cell.set_text_props(color="#eef0f4")
+            if column_index == 0:
+                cell.set_text_props(color="#eef0f4", ha="left")
             if column_index == 1:
                 cell.set_text_props(color="#d7263d", weight="bold")
-    figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends", color="#737b88", fontsize=10)
+    figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends  •  Artwork: OutNow.ch", color="#aeb4bf", fontsize=9)
     image = BytesIO()
     figure.savefig(image, format="png", dpi=150, facecolor=figure.get_facecolor(), bbox_inches="tight")
     plt.close(figure)

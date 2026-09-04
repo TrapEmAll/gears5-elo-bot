@@ -60,6 +60,8 @@ The LAN dashboard includes all-mode and per-mode leaderboards, summary cards, se
 - Match completion automatically posts an MVP, team score totals, and Elo changes. Leaderboards use embeds with a refresh button.
 - `/stats match_card match_id:<number>` creates a Gears-themed PNG snapshot with the match result, map, rosters, Elo changes, and all tracked player stats.
 
+Match cards use the included Gears of War promotional artwork from [OutNow.ch](https://outnow.ch/en/Games/2006/GearsOfWar/Images/041) as a darkened background. The image is stored at `assets/gears-background.jpg`.
+
 Example for a 2v2 Gnashers match:
 
 `/match record mode:2v2 Gnashers winner:Team 1 team_one:@Alice, @Bob team_two:@Carol, @Dave map_name:Checkout`
