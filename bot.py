@@ -442,6 +442,27 @@ class EloDatabase:
         ).fetchone()
         return row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
 
+    def adjust_rating(self, guild_id: int, user_id: int, mode: str, delta: int) -> tuple[int, int, int, str]:
+        """Apply an admin rating adjustment without changing match statistics."""
+        if delta == 0:
+            raise ValueError("The adjustment must not be zero.")
+        row = self.connection.execute("SELECT * FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, user_id, mode)).fetchone()
+        settings = self.elo_settings(guild_id, mode)
+        old_rating = int(row["rating"]) if row else int(settings["starting_rating"])
+        new_rating = max(int(settings["rating_floor"]), old_rating + delta)
+        applied_delta = new_rating - old_rating
+        old_mu, sigma = self.get_trueskill(guild_id, user_id, mode)
+        new_mu = old_mu + applied_delta / 40.0
+        rank_number, rank_name = gow2_rank(new_rating)
+        peak_rating = max(new_rating, int(row["peak_rating"]) if row else old_rating)
+        self.connection.execute(
+            "INSERT INTO ratings (guild_id, user_id, mode, rating, peak_rating, mu, sigma, skill_rating, gow2_rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id, mode) DO UPDATE SET rating=excluded.rating, peak_rating=excluded.peak_rating, mu=excluded.mu, sigma=excluded.sigma, skill_rating=excluded.skill_rating, gow2_rank=excluded.gow2_rank",
+            (guild_id, user_id, mode, new_rating, peak_rating, new_mu, sigma, new_rating, rank_number),
+        )
+        self.connection.commit()
+        return old_rating, new_rating, rank_number, rank_name
+
     def get_trueskill(self, guild_id: int, user_id: int, mode: str) -> tuple[float, float]:
         row = self.connection.execute("SELECT mu, sigma FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, user_id, mode)).fetchone()
         if not row:
@@ -1565,6 +1586,42 @@ async def setelo(interaction: discord.Interaction, mode: app_commands.Choice[str
         return
     bot.database.set_elo_settings(interaction.guild_id, mode.value, starting_rating, k_factor, rating_floor, provisional_games)
     await interaction.response.send_message(f"Updated **{mode_label(mode.value)}**: starting rating **{starting_rating}**, K-factor **{k_factor}**, floor **{rating_floor}**, provisional games **{provisional_games}**.")
+
+
+async def _manual_elo_adjust(interaction: discord.Interaction, player: discord.Member, mode: app_commands.Choice[str], amount: int, reason: str, sign: int):
+    if not 1 <= amount <= 1000:
+        await interaction.response.send_message("The adjustment amount must be between 1 and 1,000.", ephemeral=True)
+        return
+    reason = reason.strip()
+    if not reason:
+        await interaction.response.send_message("A reason is required for manual rating changes.", ephemeral=True)
+        return
+    try:
+        old_rating, new_rating, rank_number, rank_name = bot.database.adjust_rating(interaction.guild_id, player.id, mode.value, sign * amount)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+    applied = new_rating - old_rating
+    bot.database.audit(interaction.guild_id, interaction.user.id, "manual_elo_adjustment", f"player={player.id}; mode={mode.value}; delta={applied:+d}; {reason[:500]}")
+    await update_elo_role(interaction.guild, player.id, mode.value, new_rating)
+    floor_note = " (rating floor reached)" if applied != sign * amount else ""
+    await interaction.response.send_message(f"Updated {player.mention} in **{mode_label(mode.value)}**: **{old_rating} → {new_rating}** ({applied:+d}) · Rank {rank_number} — **{rank_name}**{floor_note}.", ephemeral=True)
+
+
+@admin_group.command(name="elo_add", description="Add Elo to a player (administrator only)")
+@app_commands.describe(player="Player to adjust", mode="Game mode", amount="Displayed rating points to add", reason="Why the adjustment is being made")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(administrator=True)
+async def elo_add(interaction: discord.Interaction, player: discord.Member, mode: app_commands.Choice[str], amount: int, reason: str):
+    await _manual_elo_adjust(interaction, player, mode, amount, reason, 1)
+
+
+@admin_group.command(name="elo_subtract", description="Subtract Elo from a player (administrator only)")
+@app_commands.describe(player="Player to adjust", mode="Game mode", amount="Displayed rating points to subtract", reason="Why the adjustment is being made")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(administrator=True)
+async def elo_subtract(interaction: discord.Interaction, player: discord.Member, mode: app_commands.Choice[str], amount: int, reason: str):
+    await _manual_elo_adjust(interaction, player, mode, amount, reason, -1)
 
 
 @admin_group.command(name="roles_setup", description="Create Elo tier roles for a mode")
