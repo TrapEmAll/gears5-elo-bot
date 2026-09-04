@@ -40,15 +40,15 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/player profile`, `/player profile_set`, `/player search`, `/player opponents`, `/player rivalry`, `/player recent_form`, `/player consistency`, `/player personal_bests`, `/player compare`, `/player myhistory` — view player records and profiles.
 - `/team balance`, `/team random_teams`, `/team draft_start`, `/team draft_pick`, `/team draft_suggest`, `/team preset_save`, `/team presets`, `/team preset_delete`, `/team chemistry`, `/team teamhistory` — manage teams.
 - `/queue join`, `/queue leave`, `/queue status`, `/queue availability`, `/queue available`, `/queue schedule`, `/queue lfg` — find players and coordinate games.
-- `/season status`, `/season start`, `/season end`, `/season reset` — manage seasons.
+- `/season status`, `/season start`, `/season end`, `/season reset`, `/season standings`, `/season placements` — manage seasons, divisions, promotion/relegation, and placement progress.
 - `/series start`, `/series update`, `/series status` — track BO3/BO5 series.
-- `/tournament create`, `/tournament join`, `/tournament start`, `/tournament bracket` — run tournaments.
+- `/tournament create`, `/tournament join`, `/tournament start`, `/tournament bracket`, `/tournament report` — run tournaments and advance reported brackets.
 - `/lobby create`, `/lobby checkin`, `/lobby status`, `/lobby no_show`, `/lobby match_channels`, `/lobby match_channels_close` — coordinate match lobbies.
 - `/maps veto_start`, `/maps veto_ban`, `/maps veto_pick`, `/maps mapstats`, `/maps mapplayer`, `/maps rotation_set`, `/maps next_map` — manage maps.
 - `/challenge create`, `/challenge accept`, `/challenge decline` — manage challenges.
 - `/admin settings`, `/admin setelo`, `/admin roles_setup`, `/admin roles_cleanup`, `/admin nickname_sync`, `/admin backup_now`, `/admin backup_restore`, `/admin integrity`, `/admin permission_set`, `/admin webhook_set`, `/admin dashboard_share`, `/admin announcement_channel`, `/admin announcement_schedule`, `/admin announcement_cancel`, `/admin maintenance`, `/admin note_add`, `/admin notes`, `/admin note_delete`, `/admin achievement_create`, `/admin captain_set`, `/admin audit` — administrator tools.
 - `/server modes`, `/server health`, `/server help_menu` — bot and server information.
-- `/insights overview`, `/insights top_damage`, `/insights top_kills`, `/insights top_score`, `/insights top_assists`, `/insights top_captures`, `/insights top_breaks`, `/insights kd`, `/insights winrate`, `/insights peak`, `/insights recent`, `/insights lastmatch`, `/insights maps`, `/insights teams`, `/insights pending` — additional performance and match analytics.
+- `/insights overview`, `/insights improvement`, `/insights top_damage`, `/insights top_kills`, `/insights top_score`, `/insights top_assists`, `/insights top_captures`, `/insights top_breaks`, `/insights kd`, `/insights winrate`, `/insights peak`, `/insights recent`, `/insights lastmatch`, `/insights maps`, `/insights teams`, `/insights pending` — additional performance, coaching, and match analytics.
 - `/ops summary`, `/ops players`, `/ops activity`, `/ops database`, `/ops backups`, `/ops seasons`, `/ops teams`, `/ops maps`, `/ops pending`, `/ops lobbies`, `/ops tournaments`, `/ops series`, `/ops challenges`, `/ops queue`, `/ops commands` — server operational summaries.
 - `/reports ...` — 25 compact match, player, stat, and activity totals, including latest/oldest match and mode breakdown.
 - `/tools ...` — 25 quick diagnostics for identity, latency, settings, queues, schedules, backups, SQLite, and database health.

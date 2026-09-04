@@ -496,6 +496,28 @@ class EloDatabase:
     def active_season(self, guild_id: int):
         return self.connection.execute("SELECT * FROM seasons WHERE guild_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (guild_id,)).fetchone()
 
+    def season_standings(self, guild_id: int, season_id: int, mode: str):
+        """Return season records with ratings and the stats needed for divisions."""
+        return self.connection.execute(
+            """SELECT s.user_id, r.rating,
+                      COUNT(*) AS games,
+                      SUM(CASE WHEN (m.winner=1 AND instr(','||m.team_one||',', ','||s.user_id||',')>0)
+                                    OR (m.winner=2 AND instr(','||m.team_two||',', ','||s.user_id||',')>0)
+                               THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN (m.winner=1 AND instr(','||m.team_one||',', ','||s.user_id||',')>0)
+                                    OR (m.winner=2 AND instr(','||m.team_two||',', ','||s.user_id||',')>0)
+                               THEN 0 ELSE 1 END) AS losses,
+                      SUM(s.kills) AS kills, SUM(s.damage) AS damage,
+                      SUM(s.score) AS score, SUM(s.assists) AS assists
+                 FROM match_player_stats s
+                 JOIN matches m ON m.id=s.match_id AND m.guild_id=s.guild_id
+                 LEFT JOIN ratings r ON r.guild_id=s.guild_id AND r.user_id=s.user_id AND r.mode=m.mode
+                WHERE s.guild_id=? AND m.season_id=? AND m.mode=?
+                GROUP BY s.user_id, r.rating
+                ORDER BY wins DESC, rating DESC, games DESC, s.user_id""",
+            (guild_id, season_id, mode),
+        ).fetchall()
+
     def start_season(self, guild_id: int, name: str):
         if self.active_season(guild_id):
             raise ValueError("End the current season before starting a new one")
@@ -1124,6 +1146,19 @@ async def send_response(interaction: discord.Interaction, *args, **kwargs):
     return await interaction.response.send_message(*args, **kwargs)
 
 
+def rating_division(rating: int) -> str:
+    """Map Elo to a familiar competitive division."""
+    if rating >= 1600:
+        return "Master"
+    if rating >= 1400:
+        return "Onyx"
+    if rating >= 1200:
+        return "Gold"
+    if rating >= 1000:
+        return "Silver"
+    return "Bronze"
+
+
 class LeaderboardView(discord.ui.View):
     def __init__(self, guild_id: int, mode: str, metric: str):
         super().__init__(timeout=300)
@@ -1538,6 +1573,44 @@ async def season(interaction: discord.Interaction):
     await interaction.response.send_message(f"**Active season:** {active['name']}\nStarted: {active['started_at'][:10]}\nNew matches are being recorded in this season.")
 
 
+@season_group.command(name="standings", description="Show season divisions and promotion or relegation positions")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def season_standings(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    active = bot.database.active_season(interaction.guild_id)
+    if not active:
+        await interaction.response.send_message("There is no active season.", ephemeral=True)
+        return
+    rows = bot.database.season_standings(interaction.guild_id, active["id"], mode.value)
+    if not rows:
+        await interaction.response.send_message(f"No **{mode_label(mode.value)}** matches have been recorded in **{active['name']}** yet.")
+        return
+    promotion_count = max(1, len(rows) // 5) if len(rows) >= 5 else 0
+    lines = []
+    for index, row in enumerate(rows, 1):
+        member = interaction.guild.get_member(row["user_id"])
+        name = member.display_name if member else f"<@{row['user_id']}>"
+        movement = " · PROMOTE" if promotion_count and index <= promotion_count else " · RELEGATE" if promotion_count and index > len(rows) - promotion_count else ""
+        lines.append(f"**{index}.** {name} — {rating_division(row['rating'] or 1000)} **{row['rating'] or 1000}** · {row['wins']}-{row['losses']} · {row['games']} games{movement}")
+    note = "Top and bottom 20% move divisions after the season." if promotion_count else "At least five players are needed to show promotion and relegation positions."
+    await interaction.response.send_message(f"🏆 **{active['name']} — {mode_label(mode.value)} standings**\n" + "\n".join(lines) + f"\n\n_{note}_")
+
+
+@season_group.command(name="placements", description="Show provisional placement progress for a player")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def season_placements(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    player = player or interaction.user
+    row = bot.database.connection.execute("SELECT games, wins, losses, rating, provisional_games FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, player.id, mode.value)).fetchone()
+    required = bot.database.elo_settings(interaction.guild_id, mode.value)["provisional_games"]
+    if not row:
+        await interaction.response.send_message(f"{player.mention} has not played a **{mode_label(mode.value)}** placement match yet.")
+        return
+    completed = max(0, required - row["provisional_games"])
+    status = "Established" if row["provisional_games"] == 0 else "Provisional"
+    await interaction.response.send_message(f"**{player.display_name} placement status — {mode_label(mode.value)}**\nStatus: **{status}**\nProgress: **{completed}/{required}** placement games\nRecord: **{row['wins']}-{row['losses']}**\nCurrent rating: **{row['rating']}** ({rating_division(row['rating'])})")
+
+
 @season_group.command(name="start", description="Start a named season")
 @app_commands.describe(name="Season name, such as Season 1")
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1629,6 +1702,49 @@ async def tournament_bracket(interaction: discord.Interaction, tournament_id: in
         await interaction.response.send_message(f"**{tournament['name']}** is still accepting registrations.")
         return
     await interaction.response.send_message(f"**{tournament['name']} bracket**\n" + "\n".join(f"Round {item['round']}: <@{item['team_one'][0]}> vs <@{item['team_two'][0]}> — {item['status']}" for item in bracket))
+
+
+@tournament_group.command(name="report", description="Report a tournament matchup and advance the bracket")
+@app_commands.describe(tournament_id="Tournament number", game="Bracket game number", winner="Winning side")
+@app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def tournament_report(interaction: discord.Interaction, tournament_id: int, game: int, winner: app_commands.Choice[str]):
+    tournament = bot.database.tournament(interaction.guild_id, tournament_id)
+    if not tournament or tournament["status"] != "active":
+        await interaction.response.send_message("That tournament is not active.", ephemeral=True)
+        return
+    bracket = json.loads(tournament["bracket"])
+    index = game - 1
+    if index < 0 or index >= len(bracket):
+        await interaction.response.send_message("That bracket game does not exist.", ephemeral=True)
+        return
+    item = bracket[index]
+    if item["status"] != "open":
+        await interaction.response.send_message("That bracket game has already been reported.", ephemeral=True)
+        return
+    winning_team = item["team_one"] if winner.value == "1" else item["team_two"]
+    item.update(status="complete", winner=int(winner.value), winning_team=winning_team)
+    if tournament["format"] == "round_robin":
+        finished = all(match["status"] == "complete" for match in bracket)
+        status = "completed" if finished else "active"
+    else:
+        current_round = item["round"]
+        round_matches = [match for match in bracket if match["round"] == current_round]
+        if all(match["status"] == "complete" for match in round_matches):
+            winners = [match["winning_team"] for match in round_matches]
+            if len(winners) == 1:
+                status = "completed"
+            else:
+                next_round = current_round + 1
+                for offset in range(0, len(winners) - 1, 2):
+                    bracket.append({"round": next_round, "team_one": winners[offset], "team_two": winners[offset + 1], "status": "open"})
+                status = "active"
+        else:
+            status = "active"
+    bot.database.connection.execute("UPDATE tournaments SET bracket=?, status=? WHERE guild_id=? AND id=?", (json.dumps(bracket), status, interaction.guild_id, tournament_id))
+    bot.database.connection.commit()
+    result = "Tournament complete — we have a champion!" if status == "completed" else "Bracket advanced; report the next open game with `/tournament report`."
+    await interaction.response.send_message(f"✅ Reported game **{game}**: Team {winner.value} wins. {result}")
 
 
 @stats_group.command(name="teamleaderboard", description="Rank recurring teams in a mode")
@@ -3009,6 +3125,35 @@ async def insights_overview(interaction: discord.Interaction, mode: app_commands
         (interaction.guild_id, mode.value),
     ).fetchone()
     await send_response(interaction, f"**{mode_label(mode.value)} overview**\nMatches: **{row['matches']}** · Players: **{row['players']}**\nTotal kills: **{row['kills']}** · Total damage: **{row['damage']}**")
+
+
+@insights_group.command(name="improvement", description="Give a player data-based areas to improve")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def insights_improvement(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    player = player or interaction.user
+    summary = bot.database.player_stat_summary(interaction.guild_id, player.id, mode.value)
+    if not summary or not summary["matches"]:
+        await send_response(interaction, f"No recorded stats for {player.mention} in **{mode_label(mode.value)}** yet.")
+        return
+    games = summary["matches"]
+    kills = summary["kills"] or 0
+    deaths = summary["deaths"] or 0
+    damage = summary["damage"] or 0
+    assists = summary["assists"] or 0
+    kd = kills / max(1, deaths)
+    advice = []
+    if kd < 1:
+        advice.append("survival and winning more engagements")
+    if damage / games < 400:
+        advice.append("dealing more damage before taking risks")
+    if mode.value.startswith("control_") and (summary["captures"] or 0) / games < 1:
+        advice.append("playing the objective and contesting hills")
+    if mode.value == "gnashers_2v2" and assists / games < 2:
+        advice.append("creating more team-shot opportunities")
+    if not advice:
+        advice.append("maintaining consistency while pushing your strongest metric")
+    await send_response(interaction, f"**{player.display_name} improvement report — {mode_label(mode.value)}**\nRecord: **{summary['matches']}** games · K/D **{kd:.2f}** · Damage/game **{damage / games:.0f}**\nFocus next: **" + ", ".join(advice) + "**\n_Data-driven coaching based on your recorded match stats._")
 
 
 @insights_group.command(name="top_damage", description="Rank players by total damage")
