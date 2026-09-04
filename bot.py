@@ -1228,9 +1228,9 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
         values.append(f"{row['rating_delta']:+d}")
         table_rows.append(values)
 
-    figure, axis = plt.subplots(figsize=(14, 8), facecolor="#111318")
-    axis.set_facecolor("#111318")
-    axis.axis("off")
+    figure = plt.figure(figsize=(14, 8), facecolor="#111318")
+    background_axis = figure.add_axes([0, 0, 1, 1], zorder=0)
+    background_axis.axis("off")
     background_paths = (
         Path(__file__).with_name("assets") / "gears-background.jpg",
         Path(__file__).with_name("gears-background.jpg"),
@@ -1238,9 +1238,11 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     background_path = next((path for path in background_paths if path.exists()), None)
     if background_path is not None:
         background = plt.imread(background_path)
-        axis.imshow(background, extent=[0, 1, 0, 1], transform=axis.transAxes, aspect="auto", zorder=0)
-        axis.add_patch(plt.Rectangle((0, 0), 1, 1, transform=axis.transAxes, facecolor="#090b10", alpha=0.72, zorder=1))
-    axis.set_zorder(2)
+        background_axis.imshow(background, aspect="auto", zorder=0)
+        background_axis.add_patch(plt.Rectangle((0, 0), 1, 1, transform=background_axis.transAxes, facecolor="#090b10", alpha=0.42, zorder=1))
+    axis = figure.add_axes([0, 0, 1, 1], zorder=1)
+    axis.set_facecolor("none")
+    axis.axis("off")
     figure.text(0.05, 0.93, "GEARS 5", color="#d7263d", fontsize=28, fontweight="bold", family="sans-serif")
     figure.text(0.05, 0.875, "PRIVATE MATCH REPORT", color="#f2f2f2", fontsize=18, fontweight="bold")
     figure.text(0.95, 0.93, f"MATCH #{match['id']}", color="#aeb4bf", fontsize=16, ha="right", fontweight="bold")
