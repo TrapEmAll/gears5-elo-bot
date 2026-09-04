@@ -1390,13 +1390,12 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     import matplotlib.pyplot as plt
 
     stat_columns = list(stat_names(match["mode"]))
-    display_columns = ["Player", "Badge", "Team", "Rank"] + [column.title() for column in stat_columns] + ["Rating Δ"]
+    display_columns = ["Player", "Team", "Rank"] + [column.title() for column in stat_columns] + ["Rating Δ"]
     team_one = set(map(int, match["team_one"].split(",")))
     table_rows = []
     for row in stats:
         team = "1" if row["user_id"] in team_one else "2"
-        rank_number, rank_name = gow2_rank(row["rating_before"] + row["rating_delta"])
-        values = [labels.get(row["user_id"], str(row["user_id"])), "", team, f"{rank_number} · {rank_name}"]
+        values = [labels.get(row["user_id"], str(row["user_id"])), team, ""]
         values.extend(str(row[column]) for column in stat_columns)
         values.append(f"{row['rating_delta']:+d}")
         table_rows.append(values)
@@ -1422,12 +1421,11 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     figure.text(0.05, 0.82, f"{mode_label(match['mode'])}   •   {match['map_name']}", color="#d7dbe2", fontsize=15)
     figure.text(0.95, 0.82, f"TEAM {match['winner']} WINS", color="#d7263d", fontsize=15, ha="right", fontweight="bold")
     name_width = 0.30 if len(display_columns) > 8 else 0.38
-    badge_width = 0.055
     team_width = 0.06
-    rank_width = 0.15
+    rank_width = 0.10
     elo_width = 0.10
-    stat_width = (1 - name_width - badge_width - team_width - rank_width - elo_width) / len(stat_columns)
-    column_widths = [name_width, badge_width, team_width, rank_width] + [stat_width] * len(stat_columns) + [elo_width]
+    stat_width = (1 - name_width - team_width - rank_width - elo_width) / len(stat_columns)
+    column_widths = [name_width, team_width, rank_width] + [stat_width] * len(stat_columns) + [elo_width]
     table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", colWidths=column_widths, bbox=[0.03, 0.12, 0.94, 0.61])
     table.auto_set_font_size(False)
     table.set_fontsize(11)
@@ -1442,13 +1440,13 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
             cell.set_text_props(color="#eef0f4")
             if column_index == 0:
                 cell.set_text_props(color="#eef0f4", ha="left")
-            if column_index == 2:
+            if column_index == 1:
                 cell.set_text_props(color="#d7263d", weight="bold")
-            if column_index == 3:
-                cell.set_text_props(color="#f0c36b", weight="bold", fontsize=8)
-    # Optional private rank artwork in its own compact column beside each name.
+    # Optional private rank artwork centered in the Rank column. Rank cells are
+    # intentionally image-only; missing assets remain blank rather than adding
+    # a text fallback that changes the card layout.
     from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-    badge_x = 0.03 + 0.94 * (name_width + badge_width / 2)
+    rank_x = 0.03 + 0.94 * (name_width + team_width + rank_width / 2)
     for index, row in enumerate(stats, 1):
         rank_number, _ = gow2_rank(row["rating_before"] + row["rating_delta"])
         asset = rank_asset_path(rank_number)
@@ -1457,7 +1455,7 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
                 icon = prepare_rank_badge(plt, asset)
                 zoom = min(0.12, 22 / max(icon.shape[:2]))
                 y = 0.12 + 0.61 * (1 - (index + 0.5) / (len(stats) + 1))
-                axis.add_artist(AnnotationBbox(OffsetImage(icon, zoom=zoom), (badge_x, y), xycoords=axis.transAxes, frameon=False, pad=0))
+                axis.add_artist(AnnotationBbox(OffsetImage(icon, zoom=zoom), (rank_x, y), xycoords=axis.transAxes, frameon=False, pad=0))
             except (OSError, ValueError):
                 pass
     figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends  •  Artwork: OutNow.ch", color="#aeb4bf", fontsize=9)
