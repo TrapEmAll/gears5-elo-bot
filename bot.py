@@ -2581,6 +2581,30 @@ async def awards(interaction: discord.Interaction, mode: app_commands.Choice[str
     await interaction.response.send_message(f"**{mode_label(mode.value)} performance awards**\n" + "\n".join(lines))
 
 
+@stats_group.command(name="hall_of_fame", description="Show the server's all-time career leaders")
+async def hall_of_fame(interaction: discord.Interaction):
+    rows = bot.database.connection.execute("SELECT user_id, MAX(peak_rating) AS peak, SUM(wins) AS wins, SUM(games) AS games FROM ratings WHERE guild_id=? GROUP BY user_id ORDER BY peak DESC, wins DESC, games DESC LIMIT 10", (interaction.guild_id,)).fetchall()
+    if not rows:
+        await interaction.response.send_message("The Hall of Fame is empty until matches are recorded.")
+        return
+    lines = [f"**{index}.** <@{row['user_id']}> — peak **{row['peak']}** Elo · **{row['wins']}** wins · **{row['games']}** games" for index, row in enumerate(rows, 1)]
+    await interaction.response.send_message("🏛️ **Gears 5 Hall of Fame**\n" + "\n".join(lines))
+
+
+@stats_group.command(name="quests", description="Show short-term stat quests for a player")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def quests(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    player = player or interaction.user
+    summary = bot.database.player_stat_summary(interaction.guild_id, player.id, mode.value)
+    if not summary or not summary["matches"]:
+        await interaction.response.send_message(f"{player.mention} has no quest progress in **{mode_label(mode.value)}** yet.")
+        return
+    goals = [("Win 3 matches", summary["matches"] and bot.database.connection.execute("SELECT wins FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, player.id, mode.value)).fetchone()["wins"], 3), ("Deal 1,000 damage", summary["damage"] or 0, 1000), ("Get 30 kills", summary["kills"] or 0, 30)]
+    lines = [f"{'✅' if value >= target else '⬜'} {label}: **{min(value, target)}/{target}**" for label, value, target in goals]
+    await interaction.response.send_message(f"🎯 **{player.display_name} quests — {mode_label(mode.value)}**\n" + "\n".join(lines))
+
+
 @stats_group.command(name="player", description="Show a player's match-stat totals and averages")
 @app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
 @app_commands.choices(mode=mode_choices)
@@ -3173,6 +3197,32 @@ async def insights_overview(interaction: discord.Interaction, mode: app_commands
         (interaction.guild_id, mode.value),
     ).fetchone()
     await send_response(interaction, f"**{mode_label(mode.value)} overview**\nMatches: **{row['matches']}** · Players: **{row['players']}**\nTotal kills: **{row['kills']}** · Total damage: **{row['damage']}**")
+
+
+@insights_group.command(name="clutch", description="Rank players in close matches")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_clutch(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    matches = bot.database.connection.execute("SELECT id, winner, team_one, team_two FROM matches WHERE guild_id=? AND mode=? ORDER BY id DESC", (interaction.guild_id, mode.value)).fetchall()
+    records: dict[int, list[int]] = {}
+    for match in matches:
+        stats = bot.database.connection.execute("SELECT user_id, score FROM match_player_stats WHERE guild_id=? AND match_id=?", (interaction.guild_id, match["id"])).fetchall()
+        first = {int(value) for value in match["team_one"].split(",")}
+        first_score = sum(row["score"] for row in stats if row["user_id"] in first)
+        second_score = sum(row["score"] for row in stats if row["user_id"] not in first)
+        if abs(first_score - second_score) > max(25, (first_score + second_score) * 0.10):
+            continue
+        for row in stats:
+            own_team = 1 if row["user_id"] in first else 2
+            values = records.setdefault(row["user_id"], [0, 0])
+            values[0] += 1
+            values[1] += int(own_team == match["winner"])
+    ranked = sorted(((player_id, close, wins) for player_id, (close, wins) in records.items() if close >= 2), key=lambda item: (item[2] / item[1], item[1]), reverse=True)[:10]
+    if not ranked:
+        await send_response(interaction, f"Not enough close **{mode_label(mode.value)}** matches yet. Two close games are needed per player.")
+        return
+    lines = [f"**{index}.** <@{player_id}> — **{wins}-{close - wins}** in close games ({wins / close:.0%})" for index, (player_id, close, wins) in enumerate(ranked, 1)]
+    await send_response(interaction, f"🔥 **Clutch rankings — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
 @insights_group.command(name="improvement", description="Give a player data-based areas to improve")
