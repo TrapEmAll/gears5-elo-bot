@@ -54,8 +54,10 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/tools ...` — 25 quick diagnostics for identity, latency, settings, queues, schedules, backups, SQLite, and database health.
 - `/analytics ...` — 25 live views for career totals, mode mix, map balance, K/D, efficiency, Elo gains, peak ratings, activity timing, data quality, rating spread, and stat leaders.
 - `/community ...` — 25 server-facing boards for the tracked roster, availability, queues, LFG, match calendar, tournaments, series, lobbies, challenges, presets, achievements, replays, announcements, map rotation, and onboarding help.
+- `/matchroom ...` — 25 live match-room views for scheduled games, queues, vetoes, drafts, confirmations, active sessions, settings, and database coverage.
+- `/career ...` — 25 personal commands for your summary, modes, K/D, win rate, streaks, peak Elo, maps, opponents, totals, and per-game averages.
 
-The bot now exposes 17 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+The bot now exposes 21 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
 
 The LAN dashboard includes all-mode and per-mode leaderboards, summary cards, selectable Elo/wins/games sorting, player stat pages, player search, match detail pages, sortable JSON leaderboards (`?metric=rating|wins|winrate|games|kills|damage|assists|score&limit=100`), and JSON endpoints at `/api/health`, `/api/summary`, `/api/modes`, `/api/stats/<mode>`, `/api/matches`, `/api/match/<id>`, `/api/player/<id>`, `/api/players?q=name`, `/api/leaderboard/<mode>`, and `/api/leaderboards`. Set `DASHBOARD_GUILD_ID` in `.env` when the database contains more than one Discord server and the dashboard should show only one server.
 - `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.

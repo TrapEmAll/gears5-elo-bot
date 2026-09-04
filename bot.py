@@ -1159,7 +1159,9 @@ reports_group = app_commands.Group(name="reports", description="Detailed server 
 tools_group = app_commands.Group(name="tools", description="Quick bot tools and diagnostics")
 analytics_group = app_commands.Group(name="analytics", description="Advanced derived match analytics")
 community_group = app_commands.Group(name="community", description="Server activity and coordination views")
-for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group, reports_group, tools_group, analytics_group, community_group):
+matchroom_group = app_commands.Group(name="matchroom", description="Live match-room and coordination views")
+career_group = app_commands.Group(name="career", description="Your personal competitive record")
+for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group, reports_group, tools_group, analytics_group, community_group, matchroom_group, career_group):
     bot.tree.add_command(_group)
 
 
@@ -3898,6 +3900,221 @@ _COMMUNITY_FEATURES = (
 )
 for _name, _description, _callback in _COMMUNITY_FEATURES:
     _register_readonly_feature(community_group, _name, _description, _callback)
+
+
+async def _room_counts(interaction):
+    tables = ("matches", "pending_matches", "lobby_sessions", "series", "tournaments", "challenges")
+    text = " · ".join(f"{table.replace('_', ' ').title()}: **{_ops_count(table, interaction.guild_id)}**" for table in tables)
+    await send_response(interaction, f"**Matchroom counts**\n{text}")
+
+
+async def _room_scheduled(interaction):
+    rows = _feature_rows("SELECT id, mode, scheduled_at FROM scheduled_matches WHERE guild_id=? AND notified=0 ORDER BY scheduled_at LIMIT 15", interaction.guild_id)
+    await send_response(interaction, "**Upcoming scheduled matches**\n" + ("\n".join(f"#{r['id']} · {mode_label(r['mode'])} · {r['scheduled_at'][:16]}" for r in rows) or "No upcoming matches."))
+
+
+async def _room_queues_age(interaction):
+    rows = _feature_rows("SELECT mode, user_id, joined_at FROM matchmaking_queue WHERE guild_id=? ORDER BY joined_at LIMIT 20", interaction.guild_id)
+    await send_response(interaction, "**Queue order**\n" + ("\n".join(f"{mode_label(r['mode'])} · <@{r['user_id']}> joined {r['joined_at'][:16]}" for r in rows) or "All queues are empty."))
+
+
+async def _room_vetoes(interaction):
+    rows = _feature_rows("SELECT id, mode, status, picked FROM veto_sessions WHERE guild_id=? AND status='open' ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Open map vetoes**\n" + ("\n".join(f"Veto #{r['id']} · {mode_label(r['mode'])} · {r['status']} · pick: {r['picked'] or 'pending'}" for r in rows) or "No open vetoes."))
+
+
+async def _room_drafts(interaction):
+    rows = _feature_rows("SELECT id, mode, turn, status FROM drafts WHERE guild_id=? AND status='open' ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Open drafts**\n" + ("\n".join(f"Draft #{r['id']} · {mode_label(r['mode'])} · turn {r['turn']}" for r in rows) or "No open drafts."))
+
+
+async def _room_annotations(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(*) FROM match_annotations WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, f"Saved match annotations: **{row[0]}**")
+
+
+async def _room_replay_rate(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(*) AS total, SUM(CASE WHEN a.replay_url<>'' THEN 1 ELSE 0 END) AS linked FROM matches m LEFT JOIN match_annotations a ON a.match_id=m.id WHERE m.guild_id=?", (interaction.guild_id,)).fetchone()
+    rate = (row['linked'] or 0) / max(row['total'], 1) * 100
+    await send_response(interaction, f"**Replay coverage**\n{row['linked'] or 0}/{row['total']} matches linked (**{rate:.1f}%**)")
+
+
+async def _room_match_rate(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(*) AS games, COUNT(DISTINCT substr(created_at,1,10)) AS days FROM matches WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, f"**Match cadence**\n{row['games']} matches across {row['days']} active days · average **{row['games']/max(row['days'],1):.1f}** per active day")
+
+
+async def _room_unique_opponents(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(DISTINCT user_id) FROM match_player_stats WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, f"Tracked competitors appearing in match stat lines: **{row[0]}**")
+
+
+async def _room_latest_map(interaction):
+    row = bot.database.connection.execute("SELECT map_name, mode, created_at FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No matches recorded yet." if not row else f"Latest map: **{row['map_name']}** · {mode_label(row['mode'])} · {row['created_at'][:16]}")
+
+
+async def _room_latest_season(interaction):
+    row = bot.database.connection.execute("SELECT name, started_at, ended_at FROM seasons WHERE guild_id=? ORDER BY id DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No seasons created yet." if not row else f"Latest season: **{row['name']}** · started {row['started_at'][:10]} · {'active' if not row['ended_at'] else 'ended'}")
+
+
+async def _room_active_tournaments(interaction):
+    rows = _feature_rows("SELECT id, name, mode, status FROM tournaments WHERE guild_id=? AND status<>'complete' ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Active tournaments**\n" + ("\n".join(f"#{r['id']} {r['name']} · {mode_label(r['mode'])} · {r['status']}" for r in rows) or "No active tournaments."))
+
+
+async def _room_active_series(interaction):
+    rows = _feature_rows("SELECT id, mode, team_one_wins, team_two_wins FROM series WHERE guild_id=? AND status='open' ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Active series**\n" + ("\n".join(f"#{r['id']} · {mode_label(r['mode'])} · {r['team_one_wins']}-{r['team_two_wins']}" for r in rows) or "No active series."))
+
+
+async def _room_open_challenges(interaction):
+    rows = _feature_rows("SELECT id, mode, challenger_id, opponent_id FROM challenges WHERE guild_id=? AND status='pending' ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Pending challenges**\n" + ("\n".join(f"#{r['id']} · <@{r['challenger_id']}> vs <@{r['opponent_id']}> · {mode_label(r['mode'])}" for r in rows) or "No pending challenges."))
+
+
+async def _room_active_lobbies(interaction):
+    rows = _feature_rows("SELECT id, mode, status FROM lobby_sessions WHERE guild_id=? AND status IN ('scheduled','active') ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Active lobbies**\n" + ("\n".join(f"Lobby #{r['id']} · {mode_label(r['mode'])} · {r['status']}" for r in rows) or "No active lobbies."))
+
+
+async def _room_pending_confirmations(interaction):
+    rows = _feature_rows("SELECT id, mode, confirmed_by FROM pending_matches WHERE guild_id=? ORDER BY id DESC", interaction.guild_id)
+    await send_response(interaction, "**Confirmation status**\n" + ("\n".join(f"Match #{r['id']} · {mode_label(r['mode'])} · **{len(json.loads(r['confirmed_by']))}/2** confirmations" for r in rows) or "No pending confirmations."))
+
+
+async def _room_top_mode(interaction):
+    row = bot.database.connection.execute("SELECT mode, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY mode ORDER BY games DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No matches recorded yet." if not row else f"Most-played mode: **{mode_label(row['mode'])}** with **{row['games']}** matches")
+
+
+async def _room_top_map(interaction):
+    row = bot.database.connection.execute("SELECT map_name, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY map_name ORDER BY games DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No map data yet." if not row else f"Most-played map: **{row['map_name']}** with **{row['games']}** matches")
+
+
+async def _room_recent_day(interaction):
+    row = bot.database.connection.execute("SELECT substr(created_at,1,10) AS day, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY day ORDER BY day DESC LIMIT 1", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, "No matches recorded yet." if not row else f"Most recent active day: **{row['day']}** · **{row['games']}** matches")
+
+
+async def _room_stats_coverage(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(*) AS matches, COUNT(DISTINCT match_id) AS covered FROM match_player_stats WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, f"**Stat-line coverage**\n{row['covered']} matches have player stats across {row['matches']} stat rows")
+
+
+async def _room_mode_settings(interaction):
+    rows = _feature_rows("SELECT mode, starting_rating, k_factor, rating_floor, provisional_games FROM elo_settings WHERE guild_id=? ORDER BY mode", interaction.guild_id)
+    await send_response(interaction, "**Mode settings**\n" + ("\n".join(f"{mode_label(r['mode'])}: start {r['starting_rating']} · K {r['k_factor']} · floor {r['rating_floor']}" for r in rows) or "Default settings are in use."))
+
+
+async def _room_db_indexes(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").fetchone()
+    await send_response(interaction, f"Database performance indexes: **{row[0]}**")
+
+
+_MATCHROOM_FEATURES = (
+    ("counts", "Show live match-room record counts", _room_counts), ("scheduled", "Show upcoming scheduled matches", _room_scheduled),
+    ("queue_order", "Show queue order and join times", _room_queues_age), ("vetoes", "Show open map vetoes", _room_vetoes),
+    ("drafts", "Show open player drafts", _room_drafts), ("annotations", "Count saved match annotations", _room_annotations),
+    ("replay_rate", "Show replay-link coverage", _room_replay_rate), ("cadence", "Show match cadence", _room_match_rate),
+    ("competitors", "Count tracked competitors", _room_unique_opponents), ("latest_map", "Show the latest map played", _room_latest_map),
+    ("latest_season", "Show the latest season", _room_latest_season), ("tournaments", "Show active tournaments", _room_active_tournaments),
+    ("series", "Show active series", _room_active_series), ("challenges", "Show pending challenges", _room_open_challenges),
+    ("lobbies", "Show active lobbies", _room_active_lobbies), ("confirmations", "Show pending confirmations", _room_pending_confirmations),
+    ("top_mode", "Show the most-played mode", _room_top_mode), ("top_map", "Show the most-played map", _room_top_map),
+    ("recent_day", "Show the latest active match day", _room_recent_day), ("stat_coverage", "Show player-stat coverage", _room_stats_coverage),
+    ("settings", "Show configured Elo settings", _room_mode_settings), ("db_indexes", "Count database indexes", _room_db_indexes),
+    ("match_total", "Show total recorded matches", _count_report("matches", "Recorded matches")), ("pending_total", "Show total pending matches", _count_report("pending_matches", "Pending matches")),
+    ("lobby_total", "Show total lobbies", _count_report("lobby_sessions", "Lobbies")),
+)
+for _name, _description, _callback in _MATCHROOM_FEATURES:
+    _register_readonly_feature(matchroom_group, _name, _description, _callback)
+
+
+def _career_stat(column: str, label: str, average: bool = False):
+    async def callback(interaction):
+        aggregate = "AVG" if average else "SUM"
+        row = bot.database.connection.execute(f"SELECT COUNT(*) AS games, {aggregate}({column}) AS value FROM match_player_stats WHERE guild_id=? AND user_id=?", (interaction.guild_id, interaction.user.id)).fetchone()
+        value = float(row['value'] or 0)
+        await send_response(interaction, f"**Your {label}**\n{value:.1f} per game" if average else f"**Your {label}**\n**{value:,.0f}** across {row['games']} stat lines")
+    return callback
+
+
+async def _career_summary(interaction):
+    rows = bot.database.profile_rows(interaction.guild_id, interaction.user.id)
+    await send_response(interaction, "**Your career summary**\n" + ("\n".join(f"{mode_label(r['mode'])}: {r['rating']} Elo · {r['wins']}-{r['losses']} · {r['games']} games" for r in rows) or "You have no recorded games yet."))
+
+
+async def _career_best_mode(interaction):
+    rows = bot.database.profile_rows(interaction.guild_id, interaction.user.id)
+    best = max(rows, key=lambda r: r['rating']) if rows else None
+    await send_response(interaction, "You have no ratings yet." if not best else f"Your best current mode is **{mode_label(best['mode'])}** at **{best['rating']} Elo**.")
+
+
+async def _career_kd(interaction):
+    row = bot.database.connection.execute("SELECT SUM(kills) AS kills, SUM(deaths) AS deaths FROM match_player_stats WHERE guild_id=? AND user_id=?", (interaction.guild_id, interaction.user.id)).fetchone()
+    await send_response(interaction, f"**Your career K/D:** **{(row['kills'] or 0)/max(row['deaths'] or 0, 1):.2f}** ({row['kills'] or 0}-{row['deaths'] or 0})")
+
+
+async def _career_winrate(interaction):
+    row = bot.database.connection.execute("SELECT SUM(wins) AS wins, SUM(games) AS games FROM ratings WHERE guild_id=? AND user_id=?", (interaction.guild_id, interaction.user.id)).fetchone()
+    await send_response(interaction, f"**Your all-mode win rate:** **{(row['wins'] or 0)/max(row['games'] or 0, 1)*100:.1f}%** ({row['wins'] or 0}-{(row['games'] or 0)-(row['wins'] or 0)})")
+
+
+async def _career_streak(interaction):
+    row = bot.database.connection.execute("SELECT mode, current_streak, best_streak FROM ratings WHERE guild_id=? AND user_id=? ORDER BY current_streak DESC, best_streak DESC LIMIT 1", (interaction.guild_id, interaction.user.id)).fetchone()
+    await send_response(interaction, "You have no streak data yet." if not row else f"**Your best streak** · {mode_label(row['mode'])}: current **{row['current_streak']}**, best **{row['best_streak']}**")
+
+
+async def _career_peak(interaction):
+    row = bot.database.connection.execute("SELECT mode, peak_rating FROM ratings WHERE guild_id=? AND user_id=? ORDER BY peak_rating DESC LIMIT 1", (interaction.guild_id, interaction.user.id)).fetchone()
+    await send_response(interaction, "You have no peak rating yet." if not row else f"Your highest peak is **{row['peak_rating']} Elo** in **{mode_label(row['mode'])}**.")
+
+
+async def _career_maps(interaction):
+    rows = bot.database.connection.execute("SELECT m.map_name, COUNT(*) AS games FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE s.guild_id=? AND s.user_id=? GROUP BY m.map_name ORDER BY games DESC LIMIT 10", (interaction.guild_id, interaction.user.id)).fetchall()
+    await send_response(interaction, "**Your map history**\n" + ("\n".join(f"{r['map_name']} — **{r['games']}** games" for r in rows) or "You have no map history yet."))
+
+
+async def _career_recent(interaction):
+    rows = bot.database.connection.execute("SELECT m.id, m.mode, m.winner, m.team_one, m.team_two FROM matches m JOIN match_player_stats s ON s.match_id=m.id WHERE s.guild_id=? AND s.user_id=? ORDER BY m.id DESC LIMIT 10", (interaction.guild_id, interaction.user.id)).fetchall()
+    lines = []
+    for r in rows:
+        own = str(interaction.user.id) in r['team_one'].split(',')
+        won = (r['winner'] == 1 and own) or (r['winner'] == 2 and not own)
+        lines.append(f"#{r['id']} · {mode_label(r['mode'])} · {'Win' if won else 'Loss'}")
+    await send_response(interaction, "**Your recent results**\n" + ("\n".join(lines) or "No recent results."))
+
+
+async def _career_opponents(interaction):
+    rows = bot.database.opponent_records(interaction.guild_id, "control_3v3", interaction.user.id)
+    await send_response(interaction, "**Your frequent opponents**\n" + ("\n".join(f"<@{uid}> — **{vals[0]}-{vals[1]}**" for uid, vals in rows[:10]) or "No opponent history yet."))
+
+
+async def _career_modes(interaction):
+    rows = bot.database.player_stats(interaction.guild_id, interaction.user.id)
+    await send_response(interaction, "**Your mode records**\n" + ("\n".join(f"{mode_label(r['mode'])}: {r['rating']} Elo · {r['wins']}-{r['losses']}" for r in rows) or "No mode records yet."))
+
+
+_CAREER_FEATURES = (
+    ("summary", "Show your complete career summary", _career_summary), ("best_mode", "Show your best current mode", _career_best_mode),
+    ("kd", "Show your career K/D", _career_kd), ("winrate", "Show your all-mode win rate", _career_winrate),
+    ("streak", "Show your current and best streak", _career_streak), ("peak", "Show your highest peak Elo", _career_peak),
+    ("maps", "Show your most-played maps", _career_maps), ("recent", "Show your recent results", _career_recent),
+    ("opponents", "Show your frequent Control opponents", _career_opponents), ("modes", "Show your mode records", _career_modes),
+    ("kills", "Show your total kills", _career_stat("kills", "kills")), ("deaths", "Show your total deaths", _career_stat("deaths", "deaths")),
+    ("assists", "Show your total assists", _career_stat("assists", "assists")), ("damage", "Show your total damage", _career_stat("damage", "damage")),
+    ("score", "Show your total score", _career_stat("score", "score")), ("captures", "Show your total captures", _career_stat("captures", "captures")),
+    ("breaks", "Show your total hill breaks", _career_stat("breaks", "breaks")), ("avg_kills", "Show your average kills", _career_stat("kills", "kills", True)),
+    ("avg_deaths", "Show your average deaths", _career_stat("deaths", "deaths", True)), ("avg_assists", "Show your average assists", _career_stat("assists", "assists", True)),
+    ("avg_damage", "Show your average damage", _career_stat("damage", "damage", True)), ("avg_score", "Show your average score", _career_stat("score", "score", True)),
+    ("avg_captures", "Show your average captures", _career_stat("captures", "captures", True)), ("avg_breaks", "Show your average breaks", _career_stat("breaks", "breaks", True)),
+    ("provisional", "Show your provisional rating progress", _career_summary),
+)
+for _name, _description, _callback in _CAREER_FEATURES:
+    _register_readonly_feature(career_group, _name, _description, _callback)
 
 
 @bot.event
