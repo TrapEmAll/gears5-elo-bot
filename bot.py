@@ -2866,13 +2866,21 @@ async def temporary_channel_cleanup():
         bot.database.untrack_channel(row["channel_id"])
 
 
-@player_group.command(name="player_compare", description="Compare two player profiles")
+@player_group.command(name="compare", description="Compare two player profiles")
 @app_commands.describe(mode="Game mode", first="First player", second="Second player")
 @app_commands.choices(mode=mode_choices)
-async def player_compare(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.Member, second: discord.Member):
-    rows = [bot.database.connection.execute("SELECT rating, wins, losses, games FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone() for member in (first, second)]
+async def player_compare(interaction: discord.Interaction, mode: app_commands.Choice[str], first: discord.User, second: discord.User):
+    first_member = interaction.guild.get_member(first.id)
+    second_member = interaction.guild.get_member(second.id)
+    if not first_member or not second_member:
+        await send_response(interaction, "Both players must be members of this server.", ephemeral=True)
+        return
+    if first.id == second.id:
+        await send_response(interaction, "Choose two different players to compare.", ephemeral=True)
+        return
+    rows = [bot.database.connection.execute("SELECT rating, wins, losses, games FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone() for member in (first_member, second_member)]
     lines = []
-    for member, row in zip((first, second), rows):
+    for member, row in zip((first_member, second_member), rows):
         rating = row["rating"] if row else bot.database.get_rating(interaction.guild_id, member.id, mode.value)
         record = f"{row['wins']}-{row['losses']}" if row else "0-0"
         lines.append(f"{member.mention}: **{rating} Elo** · {record}")
