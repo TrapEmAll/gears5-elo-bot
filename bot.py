@@ -2210,6 +2210,29 @@ async def lobby_status(interaction: discord.Interaction, lobby_id: int):
     await interaction.response.send_message(f"**Lobby #{lobby_id} — {row['status']}**\nChecked in: {len(checked)}/{len(players)}\nMissing: " + (" ".join(f"<@{x}>" for x in players if x not in checked and x not in no_shows) or "none") + "\nNo-shows: " + (" ".join(f"<@{x}>" for x in no_shows) or "none"))
 
 
+@lobby_group.command(name="start", description="Mark a fully checked-in lobby as an active match")
+@app_commands.describe(lobby_id="Lobby number")
+async def lobby_start(interaction: discord.Interaction, lobby_id: int):
+    row = bot.database.lobby(interaction.guild_id, lobby_id)
+    if not row or row["status"] != "ready":
+        await interaction.response.send_message("That lobby must be active and fully checked in before it can start.", ephemeral=True)
+        return
+    bot.database.update_lobby(interaction.guild_id, lobby_id, "active", json.loads(row["checked_in"]), json.loads(row["no_shows"]))
+    await interaction.response.send_message(f"🔥 Lobby **#{lobby_id}** is now active. Record the result with `/match record` when the game ends.")
+
+
+@lobby_group.command(name="cancel", description="Cancel an open match lobby")
+@app_commands.describe(lobby_id="Lobby number")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def lobby_cancel(interaction: discord.Interaction, lobby_id: int):
+    row = bot.database.lobby(interaction.guild_id, lobby_id)
+    if not row or row["status"] in ("complete", "cancelled"):
+        await interaction.response.send_message("That lobby is not open.", ephemeral=True)
+        return
+    bot.database.update_lobby(interaction.guild_id, lobby_id, "cancelled", json.loads(row["checked_in"]), json.loads(row["no_shows"]))
+    await interaction.response.send_message(f"Cancelled lobby **#{lobby_id}**.", ephemeral=True)
+
+
 @lobby_group.command(name="no_show", description="Mark a player as a no-show")
 @app_commands.describe(lobby_id="Lobby number", player="Player who missed check-in")
 @app_commands.checks.has_permissions(manage_guild=True)
