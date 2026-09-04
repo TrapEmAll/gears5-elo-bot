@@ -1275,6 +1275,52 @@ def rank_asset_path(rank_number: int) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
+def prepare_rank_badge(plt, asset: Path):
+    """Load a rank image, removing a simple opaque background when possible.
+
+    Rank art is deliberately user-supplied. This best-effort cleanup handles the
+    common screenshot-style assets with a dark/wooden background while leaving
+    unusual or transparent artwork usable. The source file is never modified.
+    """
+    import numpy as np
+
+    image = plt.imread(asset)
+    pixels = image.astype(float)
+    if pixels.max() > 1.0:
+        pixels /= 255.0
+    if pixels.ndim == 2:
+        pixels = np.repeat(pixels[:, :, None], 3, axis=2)
+    if pixels.shape[2] == 3:
+        pixels = np.concatenate((pixels, np.ones((*pixels.shape[:2], 1))), axis=2)
+    rgb = pixels[:, :, :3]
+    alpha = pixels[:, :, 3]
+
+    # Estimate the background from the perimeter. Foreground symbols generally
+    # have a stronger contrast than the textured perimeter around them.
+    border = np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]), axis=0)
+    reference = np.median(border, axis=0)
+    distance = np.linalg.norm(rgb - reference, axis=2)
+    border_distance = np.linalg.norm(border - reference, axis=1)
+    threshold = max(0.14, float(np.percentile(border_distance, 90)) * 2.0)
+    foreground = (distance > threshold) & (alpha > 0.05)
+
+    # Bright metallic symbols are often close in hue to wood backgrounds, so
+    # retain unusually bright pixels as a second conservative signal.
+    luminance = (rgb * (0.2126, 0.7152, 0.0722)).sum(axis=2)
+    foreground |= (luminance > float(np.percentile(border[:, :3] @ (0.2126, 0.7152, 0.0722), 97))) & (alpha > 0.05)
+
+    if foreground.sum() < 8:
+        return pixels
+    ys, xs = np.where(foreground)
+    padding = max(2, int(min(pixels.shape[:2]) * 0.025))
+    top, bottom = max(0, ys.min() - padding), min(pixels.shape[0], ys.max() + padding + 1)
+    left, right = max(0, xs.min() - padding), min(pixels.shape[1], xs.max() + padding + 1)
+    cropped = pixels[top:bottom, left:right].copy()
+    local_mask = foreground[top:bottom, left:right]
+    cropped[:, :, 3] *= local_mask.astype(float)
+    return cropped
+
+
 async def update_elo_role(guild: discord.Guild, user_id: int, mode: str, rating: int) -> bool:
     member = guild.get_member(user_id)
     if not member:
@@ -1342,13 +1388,13 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     import matplotlib.pyplot as plt
 
     stat_columns = list(stat_names(match["mode"]))
-    display_columns = ["Player", "Team", "Rank"] + [column.title() for column in stat_columns] + ["Rating Δ"]
+    display_columns = ["Player", "Badge", "Team", "Rank"] + [column.title() for column in stat_columns] + ["Rating Δ"]
     team_one = set(map(int, match["team_one"].split(",")))
     table_rows = []
     for row in stats:
         team = "1" if row["user_id"] in team_one else "2"
         rank_number, rank_name = gow2_rank(row["rating_before"] + row["rating_delta"])
-        values = [labels.get(row["user_id"], str(row["user_id"])), team, f"{rank_number} · {rank_name}"]
+        values = [labels.get(row["user_id"], str(row["user_id"])), "", team, f"{rank_number} · {rank_name}"]
         values.extend(str(row[column]) for column in stat_columns)
         values.append(f"{row['rating_delta']:+d}")
         table_rows.append(values)
@@ -1374,11 +1420,12 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     figure.text(0.05, 0.82, f"{mode_label(match['mode'])}   •   {match['map_name']}", color="#d7dbe2", fontsize=15)
     figure.text(0.95, 0.82, f"TEAM {match['winner']} WINS", color="#d7263d", fontsize=15, ha="right", fontweight="bold")
     name_width = 0.30 if len(display_columns) > 8 else 0.38
+    badge_width = 0.055
     team_width = 0.06
     rank_width = 0.15
     elo_width = 0.10
-    stat_width = (1 - name_width - team_width - rank_width - elo_width) / len(stat_columns)
-    column_widths = [name_width, team_width, rank_width] + [stat_width] * len(stat_columns) + [elo_width]
+    stat_width = (1 - name_width - badge_width - team_width - rank_width - elo_width) / len(stat_columns)
+    column_widths = [name_width, badge_width, team_width, rank_width] + [stat_width] * len(stat_columns) + [elo_width]
     table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", colWidths=column_widths, bbox=[0.03, 0.12, 0.94, 0.61])
     table.auto_set_font_size(False)
     table.set_fontsize(11)
@@ -1393,20 +1440,22 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
             cell.set_text_props(color="#eef0f4")
             if column_index == 0:
                 cell.set_text_props(color="#eef0f4", ha="left")
-            if column_index == 1:
-                cell.set_text_props(color="#d7263d", weight="bold")
             if column_index == 2:
+                cell.set_text_props(color="#d7263d", weight="bold")
+            if column_index == 3:
                 cell.set_text_props(color="#f0c36b", weight="bold", fontsize=8)
-    # Optional private rank artwork: absent files simply leave the textual rank visible.
+    # Optional private rank artwork in its own compact column beside each name.
     from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    badge_x = 0.03 + 0.94 * (name_width + badge_width / 2)
     for index, row in enumerate(stats, 1):
         rank_number, _ = gow2_rank(row["rating_before"] + row["rating_delta"])
         asset = rank_asset_path(rank_number)
         if asset:
             try:
-                icon = plt.imread(asset)
-                y = 0.72 - ((index - 0.5) / max(len(stats), 1)) * 0.61
-                axis.add_artist(AnnotationBbox(OffsetImage(icon, zoom=0.055), (0.965, y), xycoords=axis.transAxes, frameon=False))
+                icon = prepare_rank_badge(plt, asset)
+                zoom = min(0.12, 22 / max(icon.shape[:2]))
+                y = 0.12 + 0.61 * (1 - (index + 0.5) / (len(stats) + 1))
+                axis.add_artist(AnnotationBbox(OffsetImage(icon, zoom=zoom), (badge_x, y), xycoords=axis.transAxes, frameon=False, pad=0))
             except (OSError, ValueError):
                 pass
     figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends  •  Artwork: OutNow.ch", color="#aeb4bf", fontsize=9)
