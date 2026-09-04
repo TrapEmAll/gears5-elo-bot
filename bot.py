@@ -1231,8 +1231,12 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     figure, axis = plt.subplots(figsize=(14, 8), facecolor="#111318")
     axis.set_facecolor("#111318")
     axis.axis("off")
-    background_path = Path(__file__).with_name("assets") / "gears-background.jpg"
-    if background_path.exists():
+    background_paths = (
+        Path(__file__).with_name("assets") / "gears-background.jpg",
+        Path(__file__).with_name("gears-background.jpg"),
+    )
+    background_path = next((path for path in background_paths if path.exists()), None)
+    if background_path is not None:
         background = plt.imread(background_path)
         axis.imshow(background, extent=[0, 1, 0, 1], transform=axis.transAxes, aspect="auto", zorder=0)
         axis.add_patch(plt.Rectangle((0, 0), 1, 1, transform=axis.transAxes, facecolor="#090b10", alpha=0.72, zorder=1))
