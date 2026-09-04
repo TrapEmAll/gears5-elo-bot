@@ -36,7 +36,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 
 - `/match record` — record a match and enter each player's stats one at a time; `/match confirm` confirms a pending match, and `/match force_confirm` lets a server manager record one without waiting for both teams.
 - `/match confirm`, `/match cancel`, `/match vote`, `/match edit`, `/match attach`, `/match rematch`, `/match forfeit`, `/match remake` — review and manage results.
-- `/stats leaderboard`, `/stats rating`, `/stats trend`, `/stats player`, `/stats history`, `/stats streaks`, `/stats predict`, `/stats awards`, `/stats elo_history`, `/stats confidence`, `/stats teamleaderboard`, `/stats teamstats`, `/stats close_games`, `/stats comebacks` — view rankings and analytics.
+- `/stats leaderboard`, `/stats rating`, `/stats trend`, `/stats player`, `/stats history`, `/stats match_card`, `/stats streaks`, `/stats predict`, `/stats awards`, `/stats elo_history`, `/stats confidence`, `/stats teamleaderboard`, `/stats teamstats`, `/stats close_games`, `/stats comebacks` — view rankings and analytics.
 - `/player profile`, `/player profile_set`, `/player search`, `/player opponents`, `/player rivalry`, `/player recent_form`, `/player consistency`, `/player personal_bests`, `/player compare`, `/player myhistory` — view player records and profiles.
 - `/team balance`, `/team random_teams`, `/team draft_start`, `/team draft_pick`, `/team draft_suggest`, `/team preset_save`, `/team presets`, `/team preset_delete`, `/team chemistry`, `/team teamhistory` — manage teams.
 - `/queue join`, `/queue leave`, `/queue status`, `/queue availability`, `/queue available`, `/queue schedule`, `/queue lfg` — find players and coordinate games.
@@ -58,6 +58,7 @@ The bot now exposes 17 top-level command groups instead of registering every fea
 The LAN dashboard includes all-mode and per-mode leaderboards, summary cards, selectable Elo/wins/games sorting, player stat pages, player search, match detail pages, sortable JSON leaderboards (`?metric=rating|wins|winrate|games|kills|damage|assists|score&limit=100`), and JSON endpoints at `/api/health`, `/api/summary`, `/api/modes`, `/api/stats/<mode>`, `/api/matches`, `/api/match/<id>`, `/api/player/<id>`, `/api/players?q=name`, `/api/leaderboard/<mode>`, and `/api/leaderboards`. Set `DASHBOARD_GUILD_ID` in `.env` when the database contains more than one Discord server and the dashboard should show only one server.
 - `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
 - Match completion automatically posts an MVP, team score totals, and Elo changes. Leaderboards use embeds with a refresh button.
+- `/stats match_card match_id:<number>` creates a Gears-themed PNG snapshot with the match result, map, rosters, Elo changes, and all tracked player stats.
 
 Example for a 2v2 Gnashers match:
 

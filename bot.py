@@ -1197,6 +1197,53 @@ def player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]
     return labels
 
 
+def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict[int, str]) -> BytesIO:
+    """Render a shareable Gears-themed match snapshot from recorded rows."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    stat_columns = list(stat_names(match["mode"]))
+    display_columns = ["Player", "Team"] + [column.title() for column in stat_columns] + ["Elo Δ"]
+    team_one = set(map(int, match["team_one"].split(",")))
+    table_rows = []
+    for row in stats:
+        team = "1" if row["user_id"] in team_one else "2"
+        values = [labels.get(row["user_id"], str(row["user_id"])), team]
+        values.extend(str(row[column]) for column in stat_columns)
+        values.append(f"{row['rating_delta']:+d}")
+        table_rows.append(values)
+
+    figure, axis = plt.subplots(figsize=(14, 8), facecolor="#111318")
+    axis.set_facecolor("#111318")
+    axis.axis("off")
+    figure.text(0.05, 0.93, "GEARS 5", color="#d7263d", fontsize=28, fontweight="bold", family="sans-serif")
+    figure.text(0.05, 0.875, "PRIVATE MATCH REPORT", color="#f2f2f2", fontsize=18, fontweight="bold")
+    figure.text(0.95, 0.93, f"MATCH #{match['id']}", color="#aeb4bf", fontsize=16, ha="right", fontweight="bold")
+    figure.text(0.05, 0.82, f"{mode_label(match['mode'])}   •   {match['map_name']}", color="#d7dbe2", fontsize=15)
+    figure.text(0.95, 0.82, f"TEAM {match['winner']} WINS", color="#d7263d", fontsize=15, ha="right", fontweight="bold")
+    table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", bbox=[0.03, 0.12, 0.94, 0.61])
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 1.65)
+    for (row_index, column_index), cell in table.get_celld().items():
+        cell.set_edgecolor("#363b45")
+        if row_index == 0:
+            cell.set_facecolor("#d7263d")
+            cell.set_text_props(color="white", weight="bold")
+        else:
+            cell.set_facecolor("#20242c" if row_index % 2 else "#171a20")
+            cell.set_text_props(color="#eef0f4")
+            if column_index == 1:
+                cell.set_text_props(color="#d7263d", weight="bold")
+    figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends", color="#737b88", fontsize=10)
+    image = BytesIO()
+    figure.savefig(image, format="png", dpi=150, facecolor=figure.get_facecolor(), bbox_inches="tight")
+    plt.close(figure)
+    image.seek(0)
+    return image
+
+
 class PlayerStatsModal(discord.ui.Modal):
     def __init__(self, mode: str, winner: int, team_one: list[int], team_two: list[int], player_ids: list[int], stats: dict[int, dict[str, int]], index: int, map_name: str, labels: dict[int, str]):
         self.mode = mode
@@ -2492,6 +2539,25 @@ async def history(interaction: discord.Interaction, mode: app_commands.Choice[st
         season_text = f" · {row['season_name']}" if row["season_name"] else ""
         lines.append(f"**#{row['id']} {mode_label(row['mode'])}** · {row['map_name']} · Team {row['winner']} won{season_text}\n{first} vs {second}")
     await send_response(interaction, "**Recent match history**\n" + "\n".join(lines))
+
+
+@stats_group.command(name="match_card", description="Create a Gears-themed image of a recorded match")
+@app_commands.describe(match_id="Recorded match number")
+async def match_card(interaction: discord.Interaction, match_id: int):
+    await interaction.response.defer()
+    match = bot.database.connection.execute("SELECT * FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
+    if not match:
+        await send_response(interaction, f"Match **#{match_id}** was not found in this server.", ephemeral=True)
+        return
+    stats = bot.database.connection.execute("SELECT * FROM match_player_stats WHERE guild_id=? AND match_id=? ORDER BY user_id", (interaction.guild_id, match_id)).fetchall()
+    player_ids = [row["user_id"] for row in stats]
+    labels = player_labels(interaction.guild, player_ids)
+    try:
+        image = render_match_card(match, stats, labels)
+    except ImportError:
+        await send_response(interaction, "Image cards require the plotting dependency. Run `python -m pip install -r requirements.txt` and restart the bot.", ephemeral=True)
+        return
+    await send_response(interaction, f"**Match #{match_id} snapshot**", file=discord.File(image, filename=f"gears5-match-{match_id}.png"))
 
 
 @match_group.command(name="undo", description="Undo the latest match in this server")
