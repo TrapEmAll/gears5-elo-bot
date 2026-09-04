@@ -48,7 +48,7 @@ def dashboard_summary(guild_id: int | None) -> dict:
     return {"matches": matches, "players": players, "kills": stats["kills"], "deaths": stats["deaths"], "damage": stats["damage"], "score": stats["score"]}
 
 
-LEADERBOARD_METRICS = {"rating": "rating", "wins": "wins", "games": "games", "kills": "kills", "damage": "damage", "score": "score"}
+LEADERBOARD_METRICS = {"rating": "rating", "wins": "wins", "games": "games", "winrate": "winrate", "kills": "kills", "damage": "damage", "assists": "assists", "score": "score"}
 
 
 REFRESH_SECONDS = max(10, int(os.getenv("DASHBOARD_REFRESH_SECONDS", "30")))
@@ -87,10 +87,16 @@ def leaderboard_api(mode: str):
     clause, params = guild_clause(guild_id)
     metric = request.args.get("metric", "rating")
     order = LEADERBOARD_METRICS.get(metric, "rating")
-    if metric in {"kills", "damage", "score"}:
-        rows = query(f"SELECT r.user_id, r.rating, r.wins, r.losses, r.games, COALESCE(SUM(s.{order}),0) AS {order} FROM ratings r LEFT JOIN match_player_stats s ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode WHERE {clause.replace('guild_id', 'r.guild_id')} AND r.mode=? GROUP BY r.user_id, r.rating, r.wins, r.losses, r.games ORDER BY {order} DESC LIMIT 50", params + (mode,))
+    try:
+        limit = min(max(int(request.args.get("limit", "50")), 1), 100)
+    except ValueError:
+        limit = 50
+    if metric in {"kills", "damage", "assists", "score"}:
+        rows = query(f"SELECT r.user_id, r.rating, r.wins, r.losses, r.games, COALESCE(SUM(s.{order}),0) AS {order} FROM ratings r LEFT JOIN match_player_stats s ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode WHERE {clause.replace('guild_id', 'r.guild_id')} AND r.mode=? GROUP BY r.user_id, r.rating, r.wins, r.losses, r.games ORDER BY {order} DESC, r.user_id LIMIT ?", params + (mode, limit))
+    elif metric == "winrate":
+        rows = query(f"SELECT user_id, rating, wins, losses, games, ROUND(100.0 * wins / NULLIF(games, 0), 2) AS winrate FROM ratings WHERE {clause} AND mode=? ORDER BY winrate DESC, user_id LIMIT ?", params + (mode, limit))
     else:
-        rows = query(f"SELECT user_id, rating, wins, losses, games FROM ratings WHERE {clause} AND mode=? ORDER BY {order} DESC LIMIT 50", params + (mode,))
+        rows = query(f"SELECT user_id, rating, wins, losses, games FROM ratings WHERE {clause} AND mode=? ORDER BY {order} DESC, user_id LIMIT ?", params + (mode, limit))
     return jsonify([dict(row) for row in rows])
 
 
