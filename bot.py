@@ -1271,6 +1271,8 @@ def rank_asset_path(rank_number: int) -> Path | None:
         Path(__file__).with_name("assets") / "ranks" / f"{rank_number}.png",
         Path(__file__).with_name("ranks") / f"rank-{rank_number}.png",
         Path(__file__).with_name("ranks") / f"{rank_number}.png",
+        Path(__file__).with_name(f"rank-{rank_number}.png"),
+        Path(__file__).with_name(f"{rank_number}.png"),
     )
     return next((path for path in candidates if path.is_file()), None)
 
