@@ -1197,6 +1197,20 @@ def player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]
     return labels
 
 
+async def fetch_player_labels(guild: discord.Guild, player_ids: list[int]) -> dict[int, str]:
+    """Resolve card names from cache, then Discord, without failing the card."""
+    labels = player_labels(guild, player_ids)
+    for index, player_id in enumerate(player_ids, 1):
+        if not labels[player_id].startswith("Player "):
+            continue
+        try:
+            member = await guild.fetch_member(player_id)
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            continue
+        labels[player_id] = f"{member.display_name} (@{member.name})"
+    return labels
+
+
 def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict[int, str]) -> BytesIO:
     """Render a shareable Gears-themed match snapshot from recorded rows."""
     import matplotlib
@@ -2551,7 +2565,7 @@ async def match_card(interaction: discord.Interaction, match_id: int):
         return
     stats = bot.database.connection.execute("SELECT * FROM match_player_stats WHERE guild_id=? AND match_id=? ORDER BY user_id", (interaction.guild_id, match_id)).fetchall()
     player_ids = [row["user_id"] for row in stats]
-    labels = player_labels(interaction.guild, player_ids)
+    labels = await fetch_player_labels(interaction.guild, player_ids)
     try:
         image = render_match_card(match, stats, labels)
     except ImportError:
