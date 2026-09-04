@@ -17,7 +17,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from elo import MODES, balance_teams, calculate_match_changes, canonical_matchup, expected_score, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_key, team_size
+from elo import MODES, balance_teams, calculate_match_changes, calculate_trueskill_changes, canonical_matchup, expected_score, gow2_rank, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_key, team_size, trueskill_display, TRUESKILL_MU, TRUESKILL_SIGMA
 
 load_dotenv()
 
@@ -62,6 +62,10 @@ class EloDatabase:
                 best_streak INTEGER NOT NULL DEFAULT 0,
                 provisional_games INTEGER NOT NULL DEFAULT 0,
                 peak_rating INTEGER NOT NULL DEFAULT 1000,
+                mu REAL NOT NULL DEFAULT 25.0,
+                sigma REAL NOT NULL DEFAULT 8.3333333333,
+                skill_rating INTEGER NOT NULL DEFAULT 1000,
+                gow2_rank INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (guild_id, user_id, mode)
             );
             CREATE TABLE IF NOT EXISTS matches (
@@ -89,6 +93,10 @@ class EloDatabase:
                 score INTEGER NOT NULL DEFAULT 0,
                 rating_before INTEGER NOT NULL DEFAULT 0,
                 rating_delta INTEGER NOT NULL DEFAULT 0,
+                mu_before REAL,
+                sigma_before REAL,
+                mu_after REAL,
+                sigma_after REAL,
                 PRIMARY KEY (match_id, user_id),
                 FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
             );
@@ -391,6 +399,22 @@ class EloDatabase:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN provisional_games INTEGER NOT NULL DEFAULT 0")
         if "peak_rating" not in rating_columns:
             self.connection.execute("ALTER TABLE ratings ADD COLUMN peak_rating INTEGER NOT NULL DEFAULT 1000")
+        if "mu" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN mu REAL NOT NULL DEFAULT 25.0")
+        if "sigma" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN sigma REAL NOT NULL DEFAULT 8.3333333333")
+        if "skill_rating" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN skill_rating INTEGER NOT NULL DEFAULT 1000")
+        if "gow2_rank" not in rating_columns:
+            self.connection.execute("ALTER TABLE ratings ADD COLUMN gow2_rank INTEGER NOT NULL DEFAULT 1")
+        stats_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(match_player_stats)")}
+        for column in ("mu_before", "sigma_before", "mu_after", "sigma_after"):
+            if column not in stats_columns:
+                self.connection.execute(f"ALTER TABLE match_player_stats ADD COLUMN {column} REAL")
+        # Existing 1000-scale Elo values become a conservative TrueSkill seed.
+        self.connection.execute("UPDATE ratings SET mu=25.0 + (rating - 1000) / 40.0, skill_rating=rating WHERE mu=25.0 AND rating<>1000")
+        for row in self.connection.execute("SELECT guild_id, user_id, mode, skill_rating FROM ratings").fetchall():
+            self.connection.execute("UPDATE ratings SET gow2_rank=? WHERE guild_id=? AND user_id=? AND mode=?", (gow2_rank(row["skill_rating"])[0], row["guild_id"], row["user_id"], row["mode"]))
         settings_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(elo_settings)")}
         if "rating_floor" not in settings_columns:
             self.connection.execute("ALTER TABLE elo_settings ADD COLUMN rating_floor INTEGER NOT NULL DEFAULT 0")
@@ -417,6 +441,19 @@ class EloDatabase:
             (guild_id, user_id, mode),
         ).fetchone()
         return row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
+
+    def get_trueskill(self, guild_id: int, user_id: int, mode: str) -> tuple[float, float]:
+        row = self.connection.execute("SELECT mu, sigma FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, user_id, mode)).fetchone()
+        if not row:
+            starting = self.elo_settings(guild_id, mode)["starting_rating"]
+            return TRUESKILL_MU + (starting - DEFAULT_RATING) / 40.0, TRUESKILL_SIGMA
+        return float(row["mu"] or TRUESKILL_MU), float(row["sigma"] or TRUESKILL_SIGMA)
+
+    def get_rank(self, guild_id: int, user_id: int, mode: str) -> tuple[int, str, int]:
+        row = self.connection.execute("SELECT rating, gow2_rank FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, user_id, mode)).fetchone()
+        rating = row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
+        rank_number, rank_name = gow2_rank(rating)
+        return rank_number, rank_name, rating
 
     def elo_settings(self, guild_id: int, mode: str):
         row = self.connection.execute("SELECT starting_rating, k_factor, rating_floor, provisional_games FROM elo_settings WHERE guild_id=? AND mode=?", (guild_id, mode)).fetchone()
@@ -544,7 +581,8 @@ class EloDatabase:
         rows = self.connection.execute("SELECT user_id, mode FROM ratings WHERE guild_id=?", (guild_id,)).fetchall()
         for row in rows:
             starting_rating = self.elo_settings(guild_id, row["mode"])["starting_rating"]
-            self.connection.execute("UPDATE ratings SET rating=?, current_streak=0 WHERE guild_id=? AND user_id=? AND mode=?", (starting_rating, guild_id, row["user_id"], row["mode"]))
+            mu = TRUESKILL_MU + (starting_rating - DEFAULT_RATING) / 40.0
+            self.connection.execute("UPDATE ratings SET rating=?, skill_rating=?, gow2_rank=?, mu=?, sigma=?, current_streak=0, best_streak=0, wins=0, losses=0, games=0, provisional_games=(SELECT provisional_games FROM elo_settings WHERE guild_id=? AND mode=?) WHERE guild_id=? AND user_id=? AND mode=?", (starting_rating, starting_rating, gow2_rank(starting_rating)[0], mu, TRUESKILL_SIGMA, guild_id, row["mode"], guild_id, row["user_id"], row["mode"]))
         self.connection.commit()
 
     def team_leaderboard(self, guild_id: int, mode: str, limit: int = 10):
@@ -867,10 +905,10 @@ class EloDatabase:
         return self.get_veto(guild_id, veto_id)
 
     def record_match(self, guild_id: int, mode: str, winner: int, team_one: list[int], team_two: list[int], stats: dict[int, dict[str, int]], created_by: int, map_name: str = "Unknown"):
-        rated_one = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_one]
-        rated_two = [(user_id, self.get_rating(guild_id, user_id, mode)) for user_id in team_two]
+        rated_one = [(user_id, *self.get_trueskill(guild_id, user_id, mode)) for user_id in team_one]
+        rated_two = [(user_id, *self.get_trueskill(guild_id, user_id, mode)) for user_id in team_two]
         settings = self.elo_settings(guild_id, mode)
-        changes = calculate_match_changes(mode, rated_one, rated_two, winner, settings["k_factor"])
+        changes = calculate_trueskill_changes(mode, rated_one, rated_two, winner)
         season = self.active_season(guild_id)
         cursor = self.connection.execute(
             "INSERT INTO matches (guild_id, mode, winner, team_one, team_two, created_by, season_id, map_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -881,8 +919,8 @@ class EloDatabase:
             change = next(change for change in changes if change.user_id == user_id)
             final_rating = max(settings["rating_floor"], change.new_rating)
             self.connection.execute(
-                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score, rating_before, rating_delta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), change.old_rating, final_rating - change.old_rating),
+                "INSERT INTO match_player_stats (match_id, guild_id, user_id, mode, captures, breaks, kills, deaths, assists, damage, score, rating_before, rating_delta, mu_before, sigma_before, mu_after, sigma_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (match_id, guild_id, user_id, mode, values.get("captures", 0), values.get("breaks", 0), values.get("kills", 0), values.get("deaths", 0), values.get("assists", 0), values.get("damage", 0), values.get("score", 0), change.old_rating, final_rating - change.old_rating, change.old_mu, change.old_sigma, change.new_mu, change.new_sigma),
             )
         team_a, team_b, first_is_a = canonical_matchup(team_one, team_two)
         team_one_values = self._sum_team_stats(team_one, stats)
@@ -904,17 +942,17 @@ class EloDatabase:
             did_win = (change.user_id in team_one and winner == 1) or (change.user_id in team_two and winner == 2)
             self.connection.execute(
                 """
-                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games, current_streak, best_streak, provisional_games, peak_rating)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                INSERT INTO ratings (guild_id, user_id, mode, rating, wins, losses, games, current_streak, best_streak, provisional_games, peak_rating, mu, sigma, skill_rating, gow2_rank)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, user_id, mode) DO UPDATE SET
-                    rating=excluded.rating, wins=wins+excluded.wins,
+                    rating=excluded.rating, mu=excluded.mu, sigma=excluded.sigma, skill_rating=excluded.skill_rating, gow2_rank=excluded.gow2_rank, wins=wins+excluded.wins,
                     losses=losses+excluded.losses, games=games+1,
                     current_streak=CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END,
                     best_streak=MAX(best_streak, CASE WHEN excluded.wins=1 THEN current_streak+1 ELSE 0 END),
                     provisional_games=MAX(0, provisional_games-1),
                     peak_rating=MAX(peak_rating, excluded.rating)
                 """,
-                (guild_id, change.user_id, mode, max(settings["rating_floor"], change.new_rating), int(did_win), int(not did_win), int(did_win), int(did_win), max(0, settings["provisional_games"] - 1), max(settings["rating_floor"], change.new_rating)),
+                (guild_id, change.user_id, mode, max(settings["rating_floor"], change.new_rating), int(did_win), int(not did_win), int(did_win), int(did_win), max(0, settings["provisional_games"] - 1), max(settings["rating_floor"], change.new_rating), change.new_mu, change.new_sigma, max(settings["rating_floor"], change.new_rating), gow2_rank(max(settings["rating_floor"], change.new_rating))[0]),
             )
         self.connection.commit()
         return changes
@@ -939,10 +977,17 @@ class EloDatabase:
         try:
             for row in stats:
                 won = (row["user_id"] in team_one and match["winner"] == 1) or (row["user_id"] in team_two and match["winner"] == 2)
-                self.connection.execute(
-                    "UPDATE ratings SET rating=rating-?, wins=wins-?, losses=losses-?, games=games-1, current_streak=MAX(0, current_streak-?) WHERE guild_id=? AND user_id=? AND mode=?",
-                    (row["rating_delta"], int(won), int(not won), int(won), guild_id, row["user_id"], match["mode"]),
-                )
+                if row["mu_before"] is not None:
+                    restored_rating = round(trueskill_display(row["mu_before"], row["sigma_before"]))
+                    self.connection.execute(
+                        "UPDATE ratings SET rating=?, skill_rating=?, gow2_rank=?, mu=?, sigma=?, wins=wins-?, losses=losses-?, games=games-1, current_streak=MAX(0, current_streak-?) WHERE guild_id=? AND user_id=? AND mode=?",
+                        (restored_rating, restored_rating, gow2_rank(restored_rating)[0], row["mu_before"], row["sigma_before"], int(won), int(not won), int(won), guild_id, row["user_id"], match["mode"]),
+                    )
+                else:
+                    self.connection.execute(
+                        "UPDATE ratings SET rating=rating-?, wins=wins-?, losses=losses-?, games=games-1, current_streak=MAX(0, current_streak-?) WHERE guild_id=? AND user_id=? AND mode=?",
+                        (row["rating_delta"], int(won), int(not won), int(won), guild_id, row["user_id"], match["mode"]),
+                    )
                 self.connection.execute("DELETE FROM ratings WHERE guild_id=? AND user_id=? AND mode=? AND games<=0", (guild_id, row["user_id"], match["mode"]))
             self.connection.execute("DELETE FROM team_matchups WHERE guild_id=? AND mode=? AND team_a=? AND team_b=? AND games<=1", (guild_id, match["mode"], team_a, team_b))
             if self.connection.execute("SELECT changes()").fetchone()[0] == 0:
@@ -1219,6 +1264,17 @@ def elo_tier(rating: int):
     return tier
 
 
+def rank_asset_path(rank_number: int) -> Path | None:
+    """Find optional user-supplied GoW2 rank art without downloading or committing it."""
+    candidates = (
+        Path(__file__).with_name("assets") / "ranks" / f"rank-{rank_number}.png",
+        Path(__file__).with_name("assets") / "ranks" / f"{rank_number}.png",
+        Path(__file__).with_name("ranks") / f"rank-{rank_number}.png",
+        Path(__file__).with_name("ranks") / f"{rank_number}.png",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
 async def update_elo_role(guild: discord.Guild, user_id: int, mode: str, rating: int) -> bool:
     member = guild.get_member(user_id)
     if not member:
@@ -1286,12 +1342,13 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     import matplotlib.pyplot as plt
 
     stat_columns = list(stat_names(match["mode"]))
-    display_columns = ["Player", "Team"] + [column.title() for column in stat_columns] + ["Elo Δ"]
+    display_columns = ["Player", "Team", "Rank"] + [column.title() for column in stat_columns] + ["Rating Δ"]
     team_one = set(map(int, match["team_one"].split(",")))
     table_rows = []
     for row in stats:
         team = "1" if row["user_id"] in team_one else "2"
-        values = [labels.get(row["user_id"], str(row["user_id"])), team]
+        rank_number, rank_name = gow2_rank(row["rating_before"] + row["rating_delta"])
+        values = [labels.get(row["user_id"], str(row["user_id"])), team, f"{rank_number} · {rank_name}"]
         values.extend(str(row[column]) for column in stat_columns)
         values.append(f"{row['rating_delta']:+d}")
         table_rows.append(values)
@@ -1316,11 +1373,12 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
     figure.text(0.95, 0.93, f"MATCH #{match['id']}", color="#aeb4bf", fontsize=16, ha="right", fontweight="bold")
     figure.text(0.05, 0.82, f"{mode_label(match['mode'])}   •   {match['map_name']}", color="#d7dbe2", fontsize=15)
     figure.text(0.95, 0.82, f"TEAM {match['winner']} WINS", color="#d7263d", fontsize=15, ha="right", fontweight="bold")
-    name_width = 0.34 if len(display_columns) > 8 else 0.42
+    name_width = 0.30 if len(display_columns) > 8 else 0.38
     team_width = 0.06
+    rank_width = 0.15
     elo_width = 0.10
-    stat_width = (1 - name_width - team_width - elo_width) / len(stat_columns)
-    column_widths = [name_width, team_width] + [stat_width] * len(stat_columns) + [elo_width]
+    stat_width = (1 - name_width - team_width - rank_width - elo_width) / len(stat_columns)
+    column_widths = [name_width, team_width, rank_width] + [stat_width] * len(stat_columns) + [elo_width]
     table = axis.table(cellText=table_rows, colLabels=display_columns, cellLoc="center", colLoc="center", colWidths=column_widths, bbox=[0.03, 0.12, 0.94, 0.61])
     table.auto_set_font_size(False)
     table.set_fontsize(11)
@@ -1337,6 +1395,20 @@ def render_match_card(match: sqlite3.Row, stats: list[sqlite3.Row], labels: dict
                 cell.set_text_props(color="#eef0f4", ha="left")
             if column_index == 1:
                 cell.set_text_props(color="#d7263d", weight="bold")
+            if column_index == 2:
+                cell.set_text_props(color="#f0c36b", weight="bold", fontsize=8)
+    # Optional private rank artwork: absent files simply leave the textual rank visible.
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    for index, row in enumerate(stats, 1):
+        rank_number, _ = gow2_rank(row["rating_before"] + row["rating_delta"])
+        asset = rank_asset_path(rank_number)
+        if asset:
+            try:
+                icon = plt.imread(asset)
+                y = 0.72 - ((index - 0.5) / max(len(stats), 1)) * 0.61
+                axis.add_artist(AnnotationBbox(OffsetImage(icon, zoom=0.055), (0.965, y), xycoords=axis.transAxes, frameon=False))
+            except (OSError, ValueError):
+                pass
     figure.text(0.05, 0.055, "Gears 5 Elo Bot  •  Private matches between friends  •  Artwork: OutNow.ch", color="#aeb4bf", fontsize=9)
     image = BytesIO()
     figure.savefig(image, format="png", dpi=150, facecolor=figure.get_facecolor(), bbox_inches="tight")
@@ -1428,7 +1500,7 @@ async def modes(interaction: discord.Interaction):
 @app_commands.choices(mode=mode_choices)
 async def settings(interaction: discord.Interaction, mode: app_commands.Choice[str]):
     row = bot.database.elo_settings(interaction.guild_id, mode.value)
-    await interaction.response.send_message(f"**{mode_label(mode.value)} Elo settings**\nStarting rating: **{row['starting_rating']}**\nK-factor: **{row['k_factor']}**\nRating floor: **{row['rating_floor']}**\nProvisional games: **{row['provisional_games']}**")
+    await interaction.response.send_message(f"**{mode_label(mode.value)} TrueSkill settings**\nStarting displayed rating: **{row['starting_rating']}**\nLegacy K-factor: **{row['k_factor']}** (not used by TrueSkill updates)\nRating floor: **{row['rating_floor']}**\nProvisional games: **{row['provisional_games']}**\nTrueSkill uses skill uncertainty to size each result change.")
 
 
 @admin_group.command(name="setelo", description="Set starting rating and K-factor for a mode")
@@ -2416,7 +2488,7 @@ async def rating(interaction: discord.Interaction, player: discord.Member | None
     if not rows:
         await interaction.response.send_message(f"<@{member.id}> has no recorded matches yet.")
         return
-    lines = [f"{mode_label(row['mode'])}: **{row['rating']}** ({row['wins']}-{row['losses']})" for row in rows]
+    lines = [f"{mode_label(row['mode'])}: **{row['rating']}** · Rank {gow2_rank(row['rating'])[0]} ({gow2_rank(row['rating'])[1]}) · {row['wins']}-{row['losses']}" for row in rows]
     await interaction.response.send_message(f"**{member.display_name}'s ratings**\n" + "\n".join(lines))
 
 

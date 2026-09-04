@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from statistics import NormalDist
 from typing import Iterable
 
 K_FACTOR = 32
@@ -27,6 +28,90 @@ class RatingChange:
     old_rating: int
     new_rating: int
     delta: int
+
+
+@dataclass(frozen=True)
+class TrueSkillChange:
+    user_id: int
+    old_mu: float
+    old_sigma: float
+    new_mu: float
+    new_sigma: float
+    old_rating: int
+    new_rating: int
+    delta: int
+
+
+TRUESKILL_MU = 25.0
+TRUESKILL_SIGMA = 25.0 / 3.0
+TRUESKILL_TAU = 25.0 / 300.0
+TRUESKILL_BETA = 25.0 / 6.0
+
+
+def trueskill_display(mu: float, sigma: float) -> int:
+    """Convert conservative TrueSkill into the bot's familiar 1000-scale rating."""
+    return round(1000 + (mu - 3 * sigma) * 40)
+
+
+def gow2_rank(rating: int) -> tuple[int, str]:
+    """Five broad Gears 2-inspired bands; exact game artwork remains optional."""
+    if rating >= 1500:
+        return 5, "Wings"
+    if rating >= 1350:
+        return 4, "Silver Stripes"
+    if rating >= 1200:
+        return 3, "Gold Arrows"
+    if rating >= 1100:
+        return 2, "Blue Arrows"
+    return 1, "Bronze Arrow"
+
+
+def calculate_trueskill_changes(
+    mode: str,
+    team_one: Iterable[tuple[int, float, float]],
+    team_two: Iterable[tuple[int, float, float]],
+    winner: int,
+) -> list[TrueSkillChange]:
+    """Update two teams with the standard two-outcome TrueSkill factor update."""
+    if mode not in MODES:
+        raise ValueError("Unknown mode")
+    first = list(team_one)
+    second = list(team_two)
+    expected_size = team_size(mode)
+    if len(first) != expected_size or len(second) != expected_size:
+        raise ValueError(f"{mode_label(mode)} requires {expected_size} player(s) per team")
+    if winner not in (1, 2):
+        raise ValueError("Winner must be team 1 or team 2")
+    if len({player_id for player_id, _, _ in first + second}) != len(first) + len(second):
+        raise ValueError("A player cannot appear on both teams or twice on one team")
+
+    # Add a small dynamics term so a player's estimate can adapt over time.
+    first_values = [(mu, (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) ** 0.5) for _, mu, sigma in first]
+    second_values = [(mu, (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) ** 0.5) for _, mu, sigma in second]
+    variance_total = sum(sigma * sigma for _, sigma in first_values + second_values)
+    c = (2 * TRUESKILL_BETA * TRUESKILL_BETA + variance_total) ** 0.5
+    delta = sum(mu for mu, _ in first_values) - sum(mu for mu, _ in second_values)
+    outcome = 1 if winner == 1 else -1
+    x = outcome * delta / c
+    normal = NormalDist()
+    pdf = normal.pdf(x)
+    cdf = max(normal.cdf(x), 1e-12)
+    v = pdf / cdf
+    w = v * (v + x)
+    first_variance = sum(sigma * sigma for _, sigma in first_values)
+    second_variance = sum(sigma * sigma for _, sigma in second_values)
+    changes: list[TrueSkillChange] = []
+    for player_id, mu, sigma in first:
+        weighted = (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) / c
+        new_mu = mu + outcome * weighted * v
+        new_sigma = max(0.25, ((sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) * max(0.05, 1 - (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) / (c * c) * w)) ** 0.5)
+        changes.append(TrueSkillChange(player_id, mu, sigma, new_mu, new_sigma, trueskill_display(mu, sigma), trueskill_display(new_mu, new_sigma), trueskill_display(new_mu, new_sigma) - trueskill_display(mu, sigma)))
+    for player_id, mu, sigma in second:
+        weighted = (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) / c
+        new_mu = mu - outcome * weighted * v
+        new_sigma = max(0.25, ((sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) * max(0.05, 1 - (sigma * sigma + TRUESKILL_TAU * TRUESKILL_TAU) / (c * c) * w)) ** 0.5)
+        changes.append(TrueSkillChange(player_id, mu, sigma, new_mu, new_sigma, trueskill_display(mu, sigma), trueskill_display(new_mu, new_sigma), trueskill_display(new_mu, new_sigma) - trueskill_display(mu, sigma)))
+    return changes
 
 
 def mode_label(mode: str) -> str:

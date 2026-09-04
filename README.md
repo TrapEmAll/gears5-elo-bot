@@ -5,7 +5,7 @@ A small Discord slash-command bot for tracking private matches between friends. 
 - Control 1v1, 3v3, and 4v4
 - 1v1 and 2v2 Gnashers
 
-Ratings start at 1000. The bot uses a standard Elo K-factor of 32 and stores everything in a local SQLite database.
+Ratings are displayed on a familiar 1000-scale, while match updates use a TrueSkill-style skill estimate with uncertainty. The bot also shows five Gears 2-inspired rank bands, with Rank 5 named Wings. Existing Elo ratings are converted into a conservative TrueSkill seed during migration; no match history is deleted.
 
 ## Setup on Windows
 
@@ -58,6 +58,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/career ...` — 25 personal commands for your summary, modes, K/D, win rate, streaks, peak Elo, maps, opponents, totals, and per-game averages.
 
 The bot now exposes 21 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+
+Optional private rank art can be placed manually in `assets/ranks/` using `rank-1.png` through `rank-5.png` (or `1.png` through `5.png`). The bot checks those files when rendering match cards and otherwise uses the textual rank. The repository does not include or fetch the original copyrighted Gears 2 artwork.
 
 The LAN dashboard includes all-mode and per-mode leaderboards, summary cards, selectable Elo/wins/games sorting, player stat pages, player search, match detail pages, sortable JSON leaderboards (`?metric=rating|wins|winrate|games|kills|damage|assists|score&limit=100`), and JSON endpoints at `/api/health`, `/api/summary`, `/api/modes`, `/api/stats/<mode>`, `/api/matches`, `/api/match/<id>`, `/api/player/<id>`, `/api/players?q=name`, `/api/leaderboard/<mode>`, and `/api/leaderboards`. Set `DASHBOARD_GUILD_ID` in `.env` when the database contains more than one Discord server and the dashboard should show only one server.
 - `start_dashboard.bat` — launch the dashboard on all LAN interfaces at port `5050`; from another device browse to `http://<the-PC's-LAN-IP>:5050`. Set `DASHBOARD_PORT` or `DASHBOARD_HOST` in `.env` to customize it. If Windows Firewall prompts, allow Python on Private networks.
