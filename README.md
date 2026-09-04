@@ -52,6 +52,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/ops summary`, `/ops players`, `/ops activity`, `/ops database`, `/ops backups`, `/ops seasons`, `/ops teams`, `/ops maps`, `/ops pending`, `/ops lobbies`, `/ops tournaments`, `/ops series`, `/ops challenges`, `/ops queue`, `/ops commands` — server operational summaries.
 - `/reports ...` — 25 compact match, player, stat, and activity totals, including latest/oldest match and mode breakdown.
 - `/tools ...` — 25 quick diagnostics for identity, latency, settings, queues, schedules, backups, SQLite, and database health.
+- `/analytics ...` — 25 live views for career totals, mode mix, map balance, K/D, efficiency, Elo gains, peak ratings, activity timing, data quality, rating spread, and stat leaders.
+- `/community ...` — 25 server-facing boards for the tracked roster, availability, queues, LFG, match calendar, tournaments, series, lobbies, challenges, presets, achievements, replays, announcements, map rotation, and onboarding help.
 
 The bot now exposes 17 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
 
