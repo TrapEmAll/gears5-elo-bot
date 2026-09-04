@@ -39,7 +39,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/stats leaderboard`, `/stats rating`, `/stats trend`, `/stats player`, `/stats history`, `/stats match_card`, `/stats streaks`, `/stats predict`, `/stats awards`, `/stats elo_history`, `/stats confidence`, `/stats teamleaderboard`, `/stats teamstats`, `/stats close_games`, `/stats comebacks` — view rankings and analytics.
 - `/player profile`, `/player profile_set`, `/player search`, `/player opponents`, `/player rivalry`, `/player recent_form`, `/player consistency`, `/player personal_bests`, `/player compare`, `/player myhistory` — view player records and profiles.
 - `/team balance`, `/team random_teams`, `/team draft_start`, `/team draft_pick`, `/team draft_suggest`, `/team preset_save`, `/team presets`, `/team preset_delete`, `/team chemistry`, `/team teamhistory` — manage teams.
-- `/queue join`, `/queue leave`, `/queue status`, `/queue availability`, `/queue available`, `/queue schedule`, `/queue lfg` — find players and coordinate games.
+- `/queue join`, `/queue leave`, `/queue status`, `/queue availability`, `/queue available`, `/queue schedule`, `/queue lfg` — find players and coordinate games. Matchmaking queues persist through restarts.
 - `/season status`, `/season start`, `/season end`, `/season reset`, `/season standings`, `/season placements` — manage seasons, divisions, promotion/relegation, and placement progress.
 - `/series start`, `/series update`, `/series status` — track BO3/BO5 series.
 - `/tournament create`, `/tournament join`, `/tournament start`, `/tournament bracket`, `/tournament report` — run tournaments and advance reported brackets.

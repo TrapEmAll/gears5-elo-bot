@@ -184,6 +184,13 @@ class EloDatabase:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
             );
+            CREATE TABLE IF NOT EXISTS matchmaking_queue (
+                guild_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, mode, user_id)
+            );
             CREATE TABLE IF NOT EXISTS scheduled_matches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -618,6 +625,28 @@ class EloDatabase:
 
     def update_lobby(self, guild_id: int, lobby_id: int, status: str, checked_in: list[int], no_shows: list[int]):
         self.connection.execute("UPDATE lobby_sessions SET status=?, checked_in=?, no_shows=? WHERE guild_id=? AND id=?", (status, json.dumps(checked_in), json.dumps(no_shows), guild_id, lobby_id))
+        self.connection.commit()
+
+    def queue_add(self, guild_id: int, mode: str, user_id: int) -> bool:
+        result = self.connection.execute("INSERT OR IGNORE INTO matchmaking_queue (guild_id, mode, user_id, joined_at) VALUES (?, ?, ?, ?)", (guild_id, mode, user_id, datetime.now(timezone.utc).isoformat()))
+        self.connection.commit()
+        return bool(result.rowcount)
+
+    def queue_remove(self, guild_id: int, mode: str, user_id: int) -> bool:
+        result = self.connection.execute("DELETE FROM matchmaking_queue WHERE guild_id=? AND mode=? AND user_id=?", (guild_id, mode, user_id))
+        self.connection.commit()
+        return bool(result.rowcount)
+
+    def queue_players(self, guild_id: int, mode: str, limit: int | None = None) -> list[int]:
+        sql = "SELECT user_id FROM matchmaking_queue WHERE guild_id=? AND mode=? ORDER BY joined_at, user_id"
+        params: list[object] = [guild_id, mode]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [row["user_id"] for row in self.connection.execute(sql, params).fetchall()]
+
+    def queue_take(self, guild_id: int, mode: str, user_ids: list[int]) -> None:
+        self.connection.executemany("DELETE FROM matchmaking_queue WHERE guild_id=? AND mode=? AND user_id=?", [(guild_id, mode, user_id) for user_id in user_ids])
         self.connection.commit()
 
     def track_channel(self, guild_id: int, channel_id: int, delete_at: str):
@@ -1464,18 +1493,16 @@ async def balance(interaction: discord.Interaction, mode: app_commands.Choice[st
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_join(interaction: discord.Interaction, mode: app_commands.Choice[str]):
-    key = (interaction.guild_id, mode.value)
-    queue = queues.setdefault(key, [])
-    if interaction.user.id in queue:
+    if not bot.database.queue_add(interaction.guild_id, mode.value, interaction.user.id):
         await interaction.response.send_message("You are already in that queue.", ephemeral=True)
         return
-    queue.append(interaction.user.id)
     needed = team_size(mode.value) * 2
+    queue = bot.database.queue_players(interaction.guild_id, mode.value)
     if len(queue) < needed:
         await interaction.response.send_message(f"<@{interaction.user.id}> joined **{mode_label(mode.value)}** queue ({len(queue)}/{needed}).")
         return
     players = queue[:needed]
-    del queue[:needed]
+    bot.database.queue_take(interaction.guild_id, mode.value, players)
     rated = [(player_id, bot.database.get_rating(interaction.guild_id, player_id, mode.value)) for player_id in players]
     team_one, team_two = balance_teams(rated)
     await interaction.response.send_message(f"**{mode_label(mode.value)} lobby ready!**\nTeam 1: {' + '.join(f'<@{player_id}>' for player_id in team_one)}\nTeam 2: {' + '.join(f'<@{player_id}>' for player_id in team_two)}\nUse `/match` to record the result.")
@@ -1485,11 +1512,9 @@ async def queue_join(interaction: discord.Interaction, mode: app_commands.Choice
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_leave(interaction: discord.Interaction, mode: app_commands.Choice[str]):
-    queue = queues.get((interaction.guild_id, mode.value), [])
-    if interaction.user.id not in queue:
+    if not bot.database.queue_remove(interaction.guild_id, mode.value, interaction.user.id):
         await interaction.response.send_message("You are not in that queue.", ephemeral=True)
         return
-    queue.remove(interaction.user.id)
     await interaction.response.send_message(f"<@{interaction.user.id}> left **{mode_label(mode.value)}** queue.")
 
 
@@ -1497,7 +1522,7 @@ async def queue_leave(interaction: discord.Interaction, mode: app_commands.Choic
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 async def queue_status(interaction: discord.Interaction, mode: app_commands.Choice[str]):
-    queue = queues.get((interaction.guild_id, mode.value), [])
+    queue = bot.database.queue_players(interaction.guild_id, mode.value)
     needed = team_size(mode.value) * 2
     names = ", ".join(f"<@{player_id}>" for player_id in queue) or "Nobody"
     await interaction.response.send_message(f"**{mode_label(mode.value)} queue** ({len(queue)}/{needed})\n{names}")
@@ -3356,9 +3381,10 @@ async def ops_challenges(interaction: discord.Interaction):
     await send_response(interaction, f"Player challenges: **{_ops_count('challenges', interaction.guild_id)}**")
 
 
-@ops_group.command(name="queue", description="Show current in-memory matchmaking queues")
+@ops_group.command(name="queue", description="Show persistent matchmaking queues")
 async def ops_queue(interaction: discord.Interaction):
-    rows = [f"{mode_label(mode)}: **{len(players)}**" for (guild_id, mode), players in queues.items() if guild_id == interaction.guild_id]
+    queue_rows = bot.database.connection.execute("SELECT mode, COUNT(*) AS players FROM matchmaking_queue WHERE guild_id=? GROUP BY mode ORDER BY mode", (interaction.guild_id,)).fetchall()
+    rows = [f"{mode_label(row['mode'])}: **{row['players']}**" for row in queue_rows]
     await send_response(interaction, "**Matchmaking queues**\n" + ("\n".join(rows) if rows else "All queues are empty."))
 
 
@@ -3481,7 +3507,7 @@ async def _tool_backup_count(interaction):
 
 
 async def _tool_queue_size(interaction):
-    total = sum(len(players) for (guild_id, _), players in queues.items() if guild_id == interaction.guild_id)
+    total = bot.database.connection.execute("SELECT COUNT(*) FROM matchmaking_queue WHERE guild_id=?", (interaction.guild_id,)).fetchone()[0]
     await send_response(interaction, f"Queued players: **{total}**")
 
 
