@@ -4,7 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, render_template_string, request
+from flask import Flask, abort, jsonify, render_template_string, request, url_for
 
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
 MODES = {"control_1v1": "Control 1v1", "control_3v3": "Control 3v3", "control_4v4": "Control 4v4", "gnashers_1v1": "1v1 Gnashers", "gnashers_2v2": "2v2 Gnashers"}
@@ -52,7 +52,7 @@ LEADERBOARD_METRICS = {"rating": "rating", "wins": "wins", "games": "games", "wi
 
 
 REFRESH_SECONDS = max(10, int(os.getenv("DASHBOARD_REFRESH_SECONDS", "30")))
-PAGE = """<!doctype html><meta http-equiv="refresh" content="{{ refresh_seconds }}"><title>Gears 5 Elo</title><style>body{font-family:system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem;background:#141414;color:#eee}a{color:#ff8a8a}nav{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.5rem}nav a{background:#333;padding:.5rem .75rem;border-radius:6px;text-decoration:none}table{border-collapse:collapse;width:100%;margin:1rem 0 2rem}th,td{text-align:left;padding:.55rem;border-bottom:1px solid #444}.card{background:#222;padding:1rem;border-radius:8px;margin-bottom:1rem}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem}.metric{background:#333;padding:.8rem;border-radius:6px}.metric strong{display:block;font-size:1.5rem}input,select{background:#333;color:#eee;border:1px solid #555;padding:.45rem;border-radius:4px}</style><h1>Gears 5 Elo Dashboard</h1><nav><a href="/">All modes</a>{% for mode, label in modes.items() %}<a href="/mode/{{ mode }}">{{ label }}</a>{% endfor %}<a href="/search">Player search</a></nav>{% block content %}{% endblock %}"""
+PAGE = """<!doctype html><meta http-equiv="refresh" content="{{ refresh_seconds }}"><title>Gears 5 Elo</title><style>body{font-family:system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem;background:#141414;color:#eee}a{color:#ff8a8a}nav{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.5rem}nav a{background:#333;padding:.5rem .75rem;border-radius:6px;text-decoration:none}table{border-collapse:collapse;width:100%;margin:1rem 0 2rem}th,td{text-align:left;padding:.55rem;border-bottom:1px solid #444}.card{background:#222;padding:1rem;border-radius:8px;margin-bottom:1rem}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem}.metric{background:#333;padding:.8rem;border-radius:6px}.metric strong{display:block;font-size:1.5rem}input,select{background:#333;color:#eee;border:1px solid #555;padding:.45rem;border-radius:4px}</style><h1>Gears 5 Elo Dashboard</h1><nav><a href="/">All modes</a>{% for mode, label in modes.items() %}<a href="/mode/{{ mode }}">{{ label }}</a>{% endfor %}<a href="/search">Player search</a><a href="{{ url_for('matches_page', guild_id=request.args.get('guild_id')) }}">Match history</a></nav>{% block content %}{% endblock %}"""
 
 
 @app.route("/")
@@ -113,18 +113,71 @@ def summary_api():
     return jsonify(dashboard_summary(requested_guild_id()))
 
 
-@app.route("/api/matches")
-def matches_api():
+def match_history():
     guild_id = requested_guild_id()
     clause, params = guild_clause(guild_id)
     mode = request.args.get("mode")
+    map_name = request.args.get("map", "").strip()[:100]
+    player = request.args.get("player", "").strip()
+    before = request.args.get("before", "")
+    if mode and mode not in MODES:
+        abort(400, description="Unknown match mode.")
+    for label, value in (("Player", player), ("Before", before)):
+        if value and (len(value) > 19 or not value.isascii() or not value.isdecimal() or not 0 < int(value) < 2**63):
+            abort(400, description=f"{label} must be a positive integer ID.")
+    if map_name:
+        clause += " AND map_name = ? COLLATE NOCASE"
+        params += (map_name,)
+    if player:
+        # Team strings also cover legacy matches without player stat rows.
+        clause += " AND (instr(',' || team_one || ',', ?) > 0 OR instr(',' || team_two || ',', ?) > 0)"
+        member = f",{int(player)},"
+        params += (member, member)
+    if before:
+        clause += " AND id < ?"
+        params += (int(before),)
     try:
         limit = min(max(int(request.args.get("limit", "25")), 1), 100)
     except ValueError:
         limit = 25
     mode_clause = " AND mode=?" if mode in MODES else ""
-    rows = query(f"SELECT id, mode, winner, team_one, team_two, map_name, created_at FROM matches WHERE {clause}{mode_clause} ORDER BY id DESC LIMIT ?", params + ((mode,) if mode in MODES else ()) + (limit,))
-    return jsonify([dict(row) for row in rows])
+    rows = query(f"SELECT id, mode, winner, team_one, team_two, map_name, created_at FROM matches WHERE {clause}{mode_clause} ORDER BY id DESC LIMIT ?", params + ((mode,) if mode in MODES else ()) + (limit + 1,))
+    return rows[:limit], len(rows) > limit
+
+
+def older_matches_url(endpoint, rows, has_more):
+    if not has_more:
+        return None
+    args = {key: request.args[key] for key in ("guild_id", "mode", "map", "player", "limit") if key in request.args}
+    return url_for(endpoint, **args, before=rows[-1]["id"])
+
+
+@app.route("/api/matches")
+def matches_api():
+    rows, has_more = match_history()
+    response = jsonify([dict(row) for row in rows])
+    next_url = older_matches_url("matches_api", rows, has_more)
+    if next_url:
+        response.headers["Link"] = f'<{next_url}>; rel="next"'
+    return response
+
+
+@app.route("/matches")
+def matches_page():
+    rows, has_more = match_history()
+    return render_template_string(PAGE + """
+<div class=card><h2>Match history</h2><form>
+{% if guild_id is not none %}<input type=hidden name=guild_id value="{{ guild_id }}">{% endif %}
+<label>Mode <select name=mode><option value="">All modes</option>
+{% for mode, label in modes.items() %}<option value="{{ mode }}" {% if request.args.get('mode') == mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Map <input name=map value="{{ request.args.get('map', '') }}" placeholder="Exact map name"></label>
+<label>Player <input name=player value="{{ request.args.get('player', '') }}" placeholder="Discord user ID"></label>
+<button>Filter</button></form></div>
+<div class=card><table><tr><th>Match</th><th>Mode</th><th>Map</th><th>Winner</th><th>Date</th></tr>
+{% for row in rows %}<tr><td><a href="{{ url_for('match_page', match_id=row.id, guild_id=guild_id) }}">#{{ row.id }}</a></td><td>{{ modes.get(row.mode, row.mode) }}</td><td>{{ row.map_name }}</td><td>Team {{ row.winner }}</td><td>{{ row.created_at }}</td></tr>
+{% else %}<tr><td colspan=5>No matches found.</td></tr>{% endfor %}</table>
+{% if next_url %}<a href="{{ next_url }}">Older matches</a>{% endif %}</div>
+""", rows=rows, next_url=older_matches_url("matches_page", rows, has_more), guild_id=requested_guild_id(), modes=MODES, refresh_seconds=REFRESH_SECONDS)
 
 
 @app.route("/api/modes")
