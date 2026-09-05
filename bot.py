@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import logging
 import random
 import secrets
 import shutil
@@ -242,6 +243,25 @@ class EloDatabase:
                 details TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS rating_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                actor_id INTEGER NOT NULL,
+                delta INTEGER NOT NULL,
+                before_rating INTEGER NOT NULL,
+                after_rating INTEGER NOT NULL,
+                before_mu REAL NOT NULL,
+                before_sigma REAL NOT NULL,
+                after_mu REAL NOT NULL,
+                after_sigma REAL NOT NULL,
+                before_peak INTEGER NOT NULL,
+                after_peak INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                rolled_back INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS match_votes (
                 match_id INTEGER NOT NULL,
                 guild_id INTEGER NOT NULL,
@@ -442,7 +462,7 @@ class EloDatabase:
         ).fetchone()
         return row["rating"] if row else self.elo_settings(guild_id, mode)["starting_rating"]
 
-    def adjust_rating(self, guild_id: int, user_id: int, mode: str, delta: int) -> tuple[int, int, int, str]:
+    def adjust_rating(self, guild_id: int, user_id: int, mode: str, delta: int, actor_id: int = 0, reason: str = "") -> tuple[int, int, int, str]:
         """Apply an admin rating adjustment without changing match statistics."""
         if delta == 0:
             raise ValueError("The adjustment must not be zero.")
@@ -454,14 +474,48 @@ class EloDatabase:
         old_mu, sigma = self.get_trueskill(guild_id, user_id, mode)
         new_mu = old_mu + applied_delta / 40.0
         rank_number, rank_name = gow2_rank(new_rating)
-        peak_rating = max(new_rating, int(row["peak_rating"]) if row else old_rating)
+        before_peak = int(row["peak_rating"]) if row else old_rating
+        peak_rating = max(new_rating, before_peak)
         self.connection.execute(
             "INSERT INTO ratings (guild_id, user_id, mode, rating, peak_rating, mu, sigma, skill_rating, gow2_rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(guild_id, user_id, mode) DO UPDATE SET rating=excluded.rating, peak_rating=excluded.peak_rating, mu=excluded.mu, sigma=excluded.sigma, skill_rating=excluded.skill_rating, gow2_rank=excluded.gow2_rank",
             (guild_id, user_id, mode, new_rating, peak_rating, new_mu, sigma, new_rating, rank_number),
         )
+        self.connection.execute(
+            "INSERT INTO rating_adjustments (guild_id, user_id, mode, actor_id, delta, before_rating, after_rating, before_mu, before_sigma, after_mu, after_sigma, before_peak, after_peak, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, user_id, mode, actor_id, applied_delta, old_rating, new_rating, old_mu, sigma, new_mu, sigma, before_peak, peak_rating, reason.strip()[:500]),
+        )
         self.connection.commit()
         return old_rating, new_rating, rank_number, rank_name
+
+    def rating_adjustments(self, guild_id: int, user_id: int | None = None, mode: str | None = None, limit: int = 10):
+        clauses = ["guild_id=?"]
+        params: list[object] = [guild_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
+        if mode:
+            clauses.append("mode=?")
+            params.append(mode)
+        params.append(max(1, min(limit, 25)))
+        return self.connection.execute(f"SELECT * FROM rating_adjustments WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT ?", params).fetchall()
+
+    def rating_adjustment(self, guild_id: int, adjustment_id: int):
+        return self.connection.execute("SELECT * FROM rating_adjustments WHERE guild_id=? AND id=?", (guild_id, adjustment_id)).fetchone()
+
+    def rollback_rating_adjustment(self, guild_id: int, adjustment_id: int) -> sqlite3.Row:
+        adjustment = self.connection.execute("SELECT * FROM rating_adjustments WHERE guild_id=? AND id=?", (guild_id, adjustment_id)).fetchone()
+        if not adjustment:
+            raise ValueError("That rating adjustment was not found in this server.")
+        if adjustment["rolled_back"]:
+            raise ValueError("That rating adjustment has already been rolled back.")
+        current = self.connection.execute("SELECT rating FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, adjustment["user_id"], adjustment["mode"])).fetchone()
+        if not current or int(current["rating"]) != int(adjustment["after_rating"]):
+            raise ValueError("The player’s rating has changed since this adjustment; rollback was refused to protect newer changes.")
+        self.connection.execute("UPDATE ratings SET rating=?, peak_rating=?, mu=?, sigma=?, skill_rating=?, gow2_rank=? WHERE guild_id=? AND user_id=? AND mode=?", (adjustment["before_rating"], adjustment["before_peak"], adjustment["before_mu"], adjustment["before_sigma"], adjustment["before_rating"], gow2_rank(adjustment["before_rating"])[0], guild_id, adjustment["user_id"], adjustment["mode"]))
+        self.connection.execute("UPDATE rating_adjustments SET rolled_back=1 WHERE guild_id=? AND id=?", (guild_id, adjustment_id))
+        self.connection.commit()
+        return adjustment
 
     def get_trueskill(self, guild_id: int, user_id: int, mode: str) -> tuple[float, float]:
         row = self.connection.execute("SELECT mu, sigma FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (guild_id, user_id, mode)).fetchone()
@@ -1080,12 +1134,12 @@ class EloDatabase:
             (guild_id, user_id, mode),
         ).fetchone()
 
-    def leaderboard(self, guild_id: int, mode: str, metric: str = "rating", limit: int = 10):
+    def leaderboard(self, guild_id: int, mode: str, metric: str = "rating", limit: int = 10, min_games: int = 0, offset: int = 0):
         allowed = {"rating": "r.rating", "wins": "r.wins", "winrate": "CAST(r.wins AS REAL) / NULLIF(r.games, 0)", "kills": "COALESCE(SUM(s.kills), 0)", "damage": "COALESCE(SUM(s.damage), 0)", "score": "COALESCE(SUM(s.score), 0)", "assists": "COALESCE(SUM(s.assists), 0)"}
         order = allowed.get(metric, allowed["rating"])
         return self.connection.execute(
-            f"SELECT r.user_id, r.rating, r.wins, r.losses, r.games, COALESCE(SUM(s.kills), 0) AS kills, COALESCE(SUM(s.damage), 0) AS damage, COALESCE(SUM(s.score), 0) AS score, COALESCE(SUM(s.assists), 0) AS assists FROM ratings r LEFT JOIN match_player_stats s ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode WHERE r.guild_id=? AND r.mode=? GROUP BY r.user_id, r.rating, r.wins, r.losses, r.games ORDER BY {order} DESC, r.wins DESC LIMIT ?",
-            (guild_id, mode, limit),
+            f"SELECT r.user_id, r.rating, r.wins, r.losses, r.games, COALESCE(SUM(s.kills), 0) AS kills, COALESCE(SUM(s.damage), 0) AS damage, COALESCE(SUM(s.score), 0) AS score, COALESCE(SUM(s.assists), 0) AS assists FROM ratings r LEFT JOIN match_player_stats s ON s.guild_id=r.guild_id AND s.user_id=r.user_id AND s.mode=r.mode WHERE r.guild_id=? AND r.mode=? AND r.games>=? GROUP BY r.user_id, r.rating, r.wins, r.losses, r.games ORDER BY {order} DESC, r.wins DESC LIMIT ? OFFSET ?",
+            (guild_id, mode, max(0, min_games), max(1, limit), max(0, offset)),
         ).fetchall()
 
     def rivalry(self, guild_id: int, mode: str, first_id: int, second_id: int):
@@ -1204,6 +1258,20 @@ bot = GearsEloBot()
 mode_choices = [app_commands.Choice(name=str(info["label"]), value=mode) for mode, info in MODES.items()]
 queues: dict[tuple[int, str], list[int]] = {}
 
+
+async def map_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    rows = bot.database.connection.execute("SELECT DISTINCT map_name FROM matches WHERE guild_id=? AND map_name<>'' AND map_name<>'Unknown' AND map_name LIKE ? ORDER BY map_name LIMIT 25", (interaction.guild_id, f"%{current}%")).fetchall()
+    return [app_commands.Choice(name=row["map_name"][:100], value=row["map_name"][:100]) for row in rows]
+
+
+async def match_id_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    try:
+        search = int(current) if current else 0
+    except ValueError:
+        search = 0
+    rows = bot.database.connection.execute("SELECT id, mode, map_name FROM matches WHERE guild_id=? AND (?=0 OR id=?) ORDER BY id DESC LIMIT 25", (interaction.guild_id, search, search)).fetchall()
+    return [app_commands.Choice(name=f"#{row['id']} · {mode_label(row['mode'])} · {row['map_name']}"[:100], value=str(row["id"])) for row in rows]
+
 # Keep the Discord command tree compact. Discord treats these as the only
 # top-level commands; the existing features live underneath relevant groups.
 match_group = app_commands.Group(name="match", description="Record and manage match results")
@@ -1259,23 +1327,73 @@ def rating_division(rating: int) -> str:
 
 
 class LeaderboardView(discord.ui.View):
-    def __init__(self, guild_id: int, mode: str, metric: str):
+    def __init__(self, guild_id: int, mode: str, metric: str, min_games: int = 0, page: int = 1):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.mode = mode
         self.metric = metric
+        self.min_games = min_games
+        self.page = page
+
+    async def render(self, interaction: discord.Interaction):
+        rows = bot.database.leaderboard(self.guild_id, self.mode, self.metric, 10, self.min_games, (self.page - 1) * 10)
+        if not rows:
+            await interaction.response.send_message("There are no more players on that leaderboard page.", ephemeral=True)
+            return
+        value_key = "rating" if self.metric == "rating" else self.metric
+        embed = discord.Embed(title=f"{mode_label(self.mode)} leaderboard", description=f"Sorted by **{self.metric}** · Page **{self.page}**" + (f" · Minimum games: **{self.min_games}**" if self.min_games else ""), colour=discord.Colour.red())
+        values = []
+        for index, row in enumerate(rows, (self.page - 1) * 10 + 1):
+            value = row[value_key] if value_key != "winrate" else f"{row['wins'] / row['games'] * 100:.1f}%"
+            values.append(f"**{index}.** <@{row['user_id']}> — {row['rating']} Elo · {row['wins']}-{row['losses']} · {value}")
+        embed.description += "\n\n" + "\n".join(values)
+        self.previous.disabled = self.page <= 1
+        self.next.disabled = len(rows) < 10
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️")
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 1:
+            self.page -= 1
+        await self.render(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        await self.render(interaction)
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rows = bot.database.leaderboard(self.guild_id, self.mode, self.metric)
-        if not rows:
-            await interaction.response.send_message("No leaderboard data yet.", ephemeral=True)
-            return
-        value_key = "rating" if self.metric == "rating" else self.metric
-        embed = discord.Embed(title=f"{mode_label(self.mode)} leaderboard", description=f"Sorted by **{self.metric}**", colour=discord.Colour.red())
-        embed.description += "\n\n" + "\n".join(f"**{index}.** <@{row['user_id']}> — {row[value_key] if value_key != 'rating' else row['rating']}" for index, row in enumerate(rows, 1))
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.render(interaction)
 
+
+class RatingRollbackView(discord.ui.View):
+    def __init__(self, guild_id: int, adjustment_id: int, actor_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.adjustment_id = adjustment_id
+        self.actor_id = actor_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("Only the administrator who started this rollback can confirm it.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm rollback", style=discord.ButtonStyle.danger, emoji="↩️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            row = bot.database.rollback_rating_adjustment(self.guild_id, self.adjustment_id)
+        except ValueError as error:
+            await interaction.response.edit_message(content=f"Rollback refused: {error}", view=None)
+            return
+        bot.database.audit(self.guild_id, interaction.user.id, "manual_elo_rollback", f"adjustment=#{self.adjustment_id}; player={row['user_id']}; mode={row['mode']}")
+        await update_elo_role(interaction.guild, row["user_id"], row["mode"], row["before_rating"])
+        await interaction.response.edit_message(content=f"Rolled back adjustment **#{self.adjustment_id}**. <@{row['user_id']}> is now **{row['before_rating']} Elo** in **{mode_label(row['mode'])}**.", view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Rollback cancelled.", view=None)
 
 def elo_tier(rating: int):
     tier = ELO_TIERS[0]
@@ -1597,7 +1715,7 @@ async def _manual_elo_adjust(interaction: discord.Interaction, player: discord.M
         await interaction.response.send_message("A reason is required for manual rating changes.", ephemeral=True)
         return
     try:
-        old_rating, new_rating, rank_number, rank_name = bot.database.adjust_rating(interaction.guild_id, player.id, mode.value, sign * amount)
+        old_rating, new_rating, rank_number, rank_name = bot.database.adjust_rating(interaction.guild_id, player.id, mode.value, sign * amount, interaction.user.id, reason)
     except ValueError as error:
         await interaction.response.send_message(str(error), ephemeral=True)
         return
@@ -1622,6 +1740,38 @@ async def elo_add(interaction: discord.Interaction, player: discord.Member, mode
 @app_commands.checks.has_permissions(administrator=True)
 async def elo_subtract(interaction: discord.Interaction, player: discord.Member, mode: app_commands.Choice[str], amount: int, reason: str):
     await _manual_elo_adjust(interaction, player, mode, amount, reason, -1)
+
+
+@admin_group.command(name="elo_history", description="Show manual Elo adjustments (administrator only)")
+@app_commands.describe(player="Optional player filter", mode="Optional game mode filter", limit="Number of adjustments to show")
+@app_commands.choices(mode=mode_choices)
+@app_commands.checks.has_permissions(administrator=True)
+async def elo_history(interaction: discord.Interaction, player: discord.Member | None = None, mode: app_commands.Choice[str] | None = None, limit: int = 10):
+    rows = bot.database.rating_adjustments(interaction.guild_id, player.id if player else None, mode.value if mode else None, limit)
+    if not rows:
+        await interaction.response.send_message("No manual Elo adjustments were found.", ephemeral=True)
+        return
+    lines = [f"**#{row['id']}** <@{row['user_id']}> · {mode_label(row['mode'])} · **{row['before_rating']} → {row['after_rating']}** · <@{row['actor_id']}> · {row['reason']}" for row in rows]
+    await interaction.response.send_message("**Manual Elo history**\n" + "\n".join(lines), ephemeral=True)
+
+
+@admin_group.command(name="elo_rollback", description="Roll back a manual Elo adjustment (administrator only)")
+@app_commands.describe(adjustment_id="Adjustment number from /admin elo_history")
+@app_commands.checks.has_permissions(administrator=True)
+async def elo_rollback(interaction: discord.Interaction, adjustment_id: int):
+    row = bot.database.rating_adjustment(interaction.guild_id, adjustment_id)
+    if not row:
+        await interaction.response.send_message("That rating adjustment was not found in this server.", ephemeral=True)
+        return
+    if row["rolled_back"]:
+        await interaction.response.send_message("That rating adjustment has already been rolled back.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"Confirm rollback of adjustment **#{adjustment_id}** for <@{row['user_id']}> in **{mode_label(row['mode'])}**?\n"
+        f"This will change the rating from **{row['after_rating']}** back to **{row['before_rating']}**.",
+        view=RatingRollbackView(interaction.guild_id, adjustment_id, interaction.user.id),
+        ephemeral=True,
+    )
 
 
 @admin_group.command(name="roles_setup", description="Create Elo tier roles for a mode")
@@ -2005,6 +2155,7 @@ async def opponents(interaction: discord.Interaction, mode: app_commands.Choice[
 
 @match_group.command(name="attach", description="Attach notes or a replay link to a match")
 @app_commands.describe(match_id="Match number", note="Optional match note", replay_url="Optional clip or replay URL")
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_attach(interaction: discord.Interaction, match_id: int, note: str = "", replay_url: str = ""):
     exists = bot.database.connection.execute("SELECT id FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
     if not exists:
@@ -2064,6 +2215,7 @@ async def captain_set(interaction: discord.Interaction, mode: app_commands.Choic
 
 @match_group.command(name="confirm", description="Confirm a pending match result")
 @app_commands.describe(match_id="Pending match number")
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_confirm(interaction: discord.Interaction, match_id: int):
     await interaction.response.defer()
     if not has_command_access(interaction, "match_confirm"):
@@ -2114,6 +2266,7 @@ async def finalize_pending_match(interaction: discord.Interaction, row: sqlite3.
 @match_group.command(name="force_confirm", description="Admin: record a pending match without waiting for both confirmations")
 @app_commands.describe(match_id="Pending match number")
 @app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_force_confirm(interaction: discord.Interaction, match_id: int):
     await interaction.response.defer()
     row = bot.database.pending_match(interaction.guild_id, match_id)
@@ -2127,6 +2280,7 @@ async def match_force_confirm(interaction: discord.Interaction, match_id: int):
 
 @match_group.command(name="cancel", description="Discard a pending match result")
 @app_commands.describe(match_id="Pending match number")
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_cancel(interaction: discord.Interaction, match_id: int):
     if not has_command_access(interaction, "match_cancel"):
         await interaction.response.send_message("You do not have the role required to cancel matches.", ephemeral=True)
@@ -2143,6 +2297,7 @@ async def match_cancel(interaction: discord.Interaction, match_id: int):
 @app_commands.describe(mode="Game mode", winner="Which team won", team_one="Comma-separated mentions/IDs", team_two="Comma-separated mentions/IDs", map_name="Optional map name")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(winner=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
+@app_commands.autocomplete(map_name=map_autocomplete)
 async def match(interaction: discord.Interaction, mode: app_commands.Choice[str], winner: app_commands.Choice[str], team_one: str, team_two: str, map_name: str | None = None):
     if not has_command_access(interaction, "match"):
         await interaction.response.send_message("You do not have the role required to submit matches.", ephemeral=True)
@@ -2545,6 +2700,7 @@ async def veto_ban(interaction: discord.Interaction, veto_id: int, map_name: str
 
 @maps_group.command(name="veto_pick", description="Pick the final map in a veto session")
 @app_commands.describe(veto_id="Veto session number", map_name="Map to pick")
+@app_commands.autocomplete(map_name=map_autocomplete)
 async def veto_pick(interaction: discord.Interaction, veto_id: int, map_name: str):
     row = bot.database.get_veto(interaction.guild_id, veto_id)
     if not row:
@@ -2559,19 +2715,30 @@ async def veto_pick(interaction: discord.Interaction, veto_id: int, map_name: st
 
 
 @stats_group.command(name="leaderboard", description="Show the top ratings for a mode")
-@app_commands.describe(mode="Game mode", metric="Ranking metric")
+@app_commands.describe(mode="Game mode", metric="Ranking metric", min_games="Only include players with at least this many games", page="Leaderboard page")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
-async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str], metric: app_commands.Choice[str] | None = None):
+async def leaderboard(interaction: discord.Interaction, mode: app_commands.Choice[str], metric: app_commands.Choice[str] | None = None, min_games: int = 0, page: int = 1):
+    if min_games < 0 or min_games > 100:
+        await interaction.response.send_message("Minimum games must be between 0 and 100.", ephemeral=True)
+        return
+    if page < 1 or page > 100:
+        await interaction.response.send_message("Leaderboard page must be between 1 and 100.", ephemeral=True)
+        return
     metric_value = metric.value if metric else "rating"
-    rows = bot.database.leaderboard(interaction.guild_id, mode.value, metric_value)
+    rows = bot.database.leaderboard(interaction.guild_id, mode.value, metric_value, 10, min_games, (page - 1) * 10)
     if not rows:
         await interaction.response.send_message(f"No matches have been recorded for **{mode_label(mode.value)}** yet.")
         return
     values = {"rating": "Elo", "wins": "wins", "winrate": "win rate", "kills": "kills", "damage": "damage", "score": "score", "assists": "assists"}
-    embed = discord.Embed(title=f"{mode_label(mode.value)} leaderboard", description=f"Sorted by **{values[metric_value]}**", colour=discord.Colour.red())
-    embed.description += "\n\n" + "\n".join(f"**{index}.** <@{row['user_id']}> — {row['rating']} Elo · {row['wins']}-{row['losses']} · {row[metric_value] if metric_value != 'winrate' else row['wins'] / row['games'] * 100:.1f}" for index, row in enumerate(rows, 1))
-    await interaction.response.send_message(embed=embed, view=LeaderboardView(interaction.guild_id, mode.value, metric_value))
+    embed = discord.Embed(title=f"{mode_label(mode.value)} leaderboard", description=f"Sorted by **{values[metric_value]}** · Page **{page}**" + (f" · Minimum games: **{min_games}**" if min_games else ""), colour=discord.Colour.red())
+    def metric_display(row):
+        return f"{row['wins'] / row['games'] * 100:.1f}%" if metric_value == "winrate" else row[metric_value]
+    embed.description += "\n\n" + "\n".join(f"**{index}.** <@{row['user_id']}> — {row['rating']} Elo · {row['wins']}-{row['losses']} · {metric_display(row)}" for index, row in enumerate(rows, (page - 1) * 10 + 1))
+    view = LeaderboardView(interaction.guild_id, mode.value, metric_value, min_games, page)
+    view.previous.disabled = page <= 1
+    view.next.disabled = len(rows) < 10
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @stats_group.command(name="streaks", description="Show the current win-streak leaders for a mode")
@@ -2845,6 +3012,7 @@ async def announce(interaction: discord.Interaction, mode: app_commands.Choice[s
 @match_group.command(name="edit", description="Correct a player's recorded stats in a match")
 @app_commands.describe(match_id="Recorded match number", player="Player whose stats need correction", stats_line="Complete stat line, e.g. kills=10 deaths=4 damage=200 score=100")
 @app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_edit(interaction: discord.Interaction, match_id: int, player: discord.Member, stats_line: str):
     match_row = bot.database.connection.execute("SELECT mode FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
     if not match_row:
@@ -2946,6 +3114,7 @@ async def history(interaction: discord.Interaction, mode: app_commands.Choice[st
 
 @stats_group.command(name="match_card", description="Create a Gears-themed image of a recorded match")
 @app_commands.describe(match_id="Recorded match number")
+@app_commands.autocomplete(match_id=match_id_autocomplete)
 async def match_card(interaction: discord.Interaction, match_id: int):
     await interaction.response.defer()
     match = bot.database.connection.execute("SELECT * FROM matches WHERE guild_id=? AND id=?", (interaction.guild_id, match_id)).fetchone()
@@ -2959,6 +3128,10 @@ async def match_card(interaction: discord.Interaction, match_id: int):
         image = render_match_card(match, stats, labels)
     except ImportError:
         await send_response(interaction, "Image cards require the plotting dependency. Run `python -m pip install -r requirements.txt` and restart the bot.", ephemeral=True)
+        return
+    except (OSError, ValueError, RuntimeError) as error:
+        logging.getLogger("gears5-elo-bot").exception("Match card generation failed", exc_info=error)
+        await send_response(interaction, "I could not generate that match card. Check the background/rank image files and try again.", ephemeral=True)
         return
     await send_response(interaction, f"**Match #{match_id} snapshot**", file=discord.File(image, filename=f"gears5-match-{match_id}.png"))
 
@@ -3310,9 +3483,32 @@ async def maintenance(interaction: discord.Interaction, enabled: bool):
     await interaction.response.send_message(f"Match submission maintenance mode is now **{'ON' if enabled else 'OFF'}**.", ephemeral=True)
 
 
+class HelpMenuView(discord.ui.View):
+    def __init__(self, pages: list[str]):
+        super().__init__(timeout=300)
+        self.pages = pages
+        self.page = 0
+
+    async def refresh(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="Gears 5 Elo commands", description=self.pages[self.page], colour=discord.Colour.red())
+        embed.set_footer(text=f"Page {self.page + 1}/{len(self.pages)} · Use Discord's command search for options")
+        self.previous.disabled = self.page == 0
+        self.next.disabled = self.page == len(self.pages) - 1
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️")
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(len(self.pages) - 1, self.page + 1)
+        await self.refresh(interaction)
+
+
 @server_group.command(name="help_menu", description="Show commands grouped by use")
 async def help_menu(interaction: discord.Interaction):
-    embed = discord.Embed(title="Gears 5 Elo commands", colour=discord.Colour.red())
     lines = []
     for command in sorted(bot.tree.get_commands(), key=lambda item: item.name):
         children = getattr(command, "commands", [])
@@ -3329,10 +3525,13 @@ async def help_menu(interaction: discord.Interaction):
         current += (" " if current else "") + line
     if current:
         chunks.append(current)
-    for index, chunk in enumerate(chunks, 1):
-        embed.add_field(name=f"Commands {index}/{len(chunks)}", value=chunk, inline=False)
-    embed.set_footer(text="Use Discord's command search for descriptions and options.")
-    await interaction.response.send_message(embed=embed)
+    pages = [f"**Commands {index}/{len(chunks)}**\n{chunk}" for index, chunk in enumerate(chunks, 1)] or ["No commands are currently registered."]
+    view = HelpMenuView(pages)
+    view.previous.disabled = True
+    view.next.disabled = len(pages) <= 1
+    embed = discord.Embed(title="Gears 5 Elo commands", description=pages[0], colour=discord.Colour.red())
+    embed.set_footer(text=f"Page 1/{len(pages)} · Use Discord's command search for options")
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @stats_group.command(name="lb", description="Alias for the player leaderboard")
@@ -4301,6 +4500,28 @@ _CAREER_FEATURES = (
 )
 for _name, _description, _callback in _CAREER_FEATURES:
     _register_readonly_feature(career_group, _name, _description, _callback)
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = getattr(error, "original", error)
+    if isinstance(original, app_commands.errors.MissingPermissions):
+        message = "You do not have permission to use that command."
+    elif isinstance(original, app_commands.errors.CommandOnCooldown):
+        message = f"That command is on cooldown. Try again in {original.retry_after:.1f} seconds."
+    elif isinstance(original, app_commands.errors.TransformerError):
+        message = "One of the values was not valid. Please choose an option from Discord's suggestions."
+    elif isinstance(original, app_commands.errors.CheckFailure):
+        message = "You cannot use that command here or with your current permissions."
+    elif isinstance(original, app_commands.errors.CommandSignatureMismatch):
+        message = "Discord still has an older version of this command. Restart the bot and wait for the slash commands to sync."
+    else:
+        logging.getLogger("gears5-elo-bot").exception("Unhandled application command error", exc_info=original)
+        message = "That command could not be completed. Please check the values and try again."
+    try:
+        await send_response(interaction, message, ephemeral=True)
+    except (discord.NotFound, discord.HTTPException):
+        pass
 
 
 @bot.event
