@@ -4502,6 +4502,117 @@ for _name, _description, _callback in _CAREER_FEATURES:
     _register_readonly_feature(career_group, _name, _description, _callback)
 
 
+@stats_group.command(name="percentile", description="Show a player's rating percentile in a mode")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def stats_percentile(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    row = bot.database.connection.execute("SELECT rating FROM ratings WHERE guild_id=? AND user_id=? AND mode=?", (interaction.guild_id, member.id, mode.value)).fetchone()
+    total = bot.database.connection.execute("SELECT COUNT(*) AS total FROM ratings WHERE guild_id=? AND mode=?", (interaction.guild_id, mode.value)).fetchone()["total"]
+    below = bot.database.connection.execute("SELECT COUNT(*) AS total FROM ratings WHERE guild_id=? AND mode=? AND rating < ?", (interaction.guild_id, mode.value, row["rating"] if row else bot.database.get_rating(interaction.guild_id, member.id, mode.value))).fetchone()["total"]
+    percentile = below / max(total, 1) * 100
+    await send_response(interaction, f"**{member.display_name} percentile — {mode_label(mode.value)}**\nElo: **{row['rating'] if row else bot.database.get_rating(interaction.guild_id, member.id, mode.value)}** · Above **{percentile:.0f}%** of tracked players ({total} total)")
+
+
+@stats_group.command(name="mode_summary", description="Compare a player's record across every mode")
+@app_commands.describe(player="Optional player; defaults to you")
+async def stats_mode_summary(interaction: discord.Interaction, player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.profile_rows(interaction.guild_id, member.id)
+    lines = [f"{mode_label(row['mode'])}: **{row['rating']} Elo** · {row['wins']}-{row['losses']} · {row['games']} games · {row['kills'] or 0} kills" for row in rows]
+    await send_response(interaction, f"**{member.display_name} mode summary**\n" + ("\n".join(lines) or "No recorded games yet."))
+
+
+@stats_group.command(name="map_record", description="Show a player's record by map")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def stats_map_record(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.connection.execute("SELECT m.map_name, COUNT(*) AS games, SUM(CASE WHEN (m.winner=1 AND instr(','||m.team_one||',', ','||?||',')>0) OR (m.winner=2 AND instr(','||m.team_two||',', ','||?||',')>0) THEN 1 ELSE 0 END) AS wins FROM matches m JOIN match_player_stats s ON s.match_id=m.id AND s.user_id=? WHERE m.guild_id=? AND m.mode=? GROUP BY m.map_name ORDER BY games DESC, m.map_name LIMIT 15", (member.id, member.id, member.id, interaction.guild_id, mode.value)).fetchall()
+    lines = [f"**{row['map_name']}** — {row['wins']}-{row['games'] - row['wins']} ({row['wins'] / row['games'] * 100:.0f}%)" for row in rows]
+    await send_response(interaction, f"**{member.display_name} map record — {mode_label(mode.value)}**\n" + ("\n".join(lines) or "No map history yet."))
+
+
+@stats_group.command(name="form", description="Show a player's recent wins and losses")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you", limit="Number of recent matches")
+@app_commands.choices(mode=mode_choices)
+async def stats_form(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None, limit: int = 10):
+    member = player or interaction.user
+    rows = bot.database.connection.execute("SELECT DISTINCT m.id, m.winner, m.team_one, m.team_two, m.map_name FROM matches m JOIN match_player_stats s ON s.match_id=m.id AND s.user_id=? WHERE m.guild_id=? AND m.mode=? ORDER BY m.id DESC LIMIT ?", (member.id, interaction.guild_id, mode.value, max(1, min(limit, 15)))).fetchall()
+    lines = []
+    for row in rows:
+        own = str(member.id) in row["team_one"].split(",")
+        won = (row["winner"] == 1 and own) or (row["winner"] == 2 and not own)
+        lines.append(f"#{row['id']} — **{'W' if won else 'L'}** · {row['map_name']}")
+    await send_response(interaction, f"**{member.display_name} recent form — {mode_label(mode.value)}**\n" + ("\n".join(lines) or "No recent matches."))
+
+
+@stats_group.command(name="teammates", description="Show a player's most frequent teammates")
+@app_commands.describe(mode="Game mode", player="Optional player; defaults to you")
+@app_commands.choices(mode=mode_choices)
+async def stats_teammates(interaction: discord.Interaction, mode: app_commands.Choice[str], player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.connection.execute("SELECT team_one, team_two FROM matches WHERE guild_id=? AND mode=? AND (instr(','||team_one||',', ','||?||',')>0 OR instr(','||team_two||',', ','||?||',')>0)", (interaction.guild_id, mode.value, member.id, member.id)).fetchall()
+    counts: dict[int, int] = {}
+    for row in rows:
+        team = row["team_one"] if str(member.id) in row["team_one"].split(",") else row["team_two"]
+        for value in team.split(","):
+            if value and int(value) != member.id:
+                counts[int(value)] = counts.get(int(value), 0) + 1
+    lines = [f"<@{user_id}> — **{games}** games" for user_id, games in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:15]]
+    await send_response(interaction, f"**{member.display_name} frequent teammates — {mode_label(mode.value)}**\n" + ("\n".join(lines) or "No teammate history yet."))
+
+
+@player_group.command(name="aliases", description="Show a player's configured gamertag and aliases")
+@app_commands.describe(player="Optional player; defaults to you")
+async def player_aliases(interaction: discord.Interaction, player: discord.Member | None = None):
+    member = player or interaction.user
+    profile = bot.database.profile(interaction.guild_id, member.id)
+    aliases = json.loads(profile["aliases"]) if profile else []
+    gamertag = profile["gamertag"] if profile else ""
+    await send_response(interaction, f"**{member.display_name} identity**\nGamertag: **{gamertag or 'Not set'}**\nAliases: " + (", ".join(f"`{alias}`" for alias in aliases) if aliases else "None configured."))
+
+
+@player_group.command(name="best_mode", description="Show a player's highest-rated mode")
+@app_commands.describe(player="Optional player; defaults to you")
+async def player_best_mode(interaction: discord.Interaction, player: discord.Member | None = None):
+    member = player or interaction.user
+    rows = bot.database.profile_rows(interaction.guild_id, member.id)
+    best = max(rows, key=lambda row: row["rating"]) if rows else None
+    await send_response(interaction, "No ratings recorded yet." if not best else f"**{member.display_name} best mode**\n{mode_label(best['mode'])}: **{best['rating']} Elo** · {best['wins']}-{best['losses']}")
+
+
+@insights_group.command(name="efficiency", description="Rank players by combined combat efficiency")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_efficiency(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.connection.execute("SELECT user_id, SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(assists) AS assists, SUM(damage) AS damage FROM match_player_stats WHERE guild_id=? AND mode=? GROUP BY user_id ORDER BY (SUM(kills) + SUM(assists) + SUM(damage) / 1000.0 - SUM(deaths)) DESC LIMIT 10", (interaction.guild_id, mode.value)).fetchall()
+    lines = [f"**{index}.** <@{row['user_id']}> — **{row['kills'] + row['assists'] + row['damage'] / 1000 - row['deaths']:.1f}** efficiency ({row['kills']} K · {row['deaths']} D · {row['assists']} A)" for index, row in enumerate(rows, 1)]
+    await send_response(interaction, f"**Efficiency leaders — {mode_label(mode.value)}**\n" + ("\n".join(lines) or "No data yet."))
+
+
+@insights_group.command(name="map_winrate", description="Show win rates for every map in a mode")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_map_winrate(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.map_stats(interaction.guild_id, mode.value)
+    lines = [f"**{row['map_name']}** — {row['games']} games · Team 1 {row['team_one_wins'] or 0} / Team 2 {row['team_two_wins'] or 0}" for row in rows]
+    await send_response(interaction, f"**Map results — {mode_label(mode.value)}**\n" + ("\n".join(lines) or "No map data yet."))
+
+
+@insights_group.command(name="rank_distribution", description="Show how many players occupy each rank")
+@app_commands.describe(mode="Game mode")
+@app_commands.choices(mode=mode_choices)
+async def insights_rank_distribution(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    rows = bot.database.connection.execute("SELECT rating FROM ratings WHERE guild_id=? AND mode=?", (interaction.guild_id, mode.value)).fetchall()
+    distribution: dict[str, int] = {}
+    for row in rows:
+        name = gow2_rank(row["rating"])[1]
+        distribution[name] = distribution.get(name, 0) + 1
+    lines = [f"**{name}** — {distribution.get(name, 0)} players" for _, name in [(1, "Bronze Arrow"), (2, "Silver Arrow"), (3, "Gold Arrow"), (4, "Onyx"), (5, "Wings")]]
+    await send_response(interaction, f"**Rank distribution — {mode_label(mode.value)}**\n" + ("\n".join(lines) if rows else "No ratings yet."))
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     original = getattr(error, "original", error)
