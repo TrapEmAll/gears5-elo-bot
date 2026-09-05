@@ -1282,6 +1282,12 @@ season_group = app_commands.Group(name="season", description="Manage competitive
 tournament_group = app_commands.Group(name="tournament", description="Run tournament brackets")
 player_group = app_commands.Group(name="player", description="Manage player profiles and records")
 admin_group = app_commands.Group(name="admin", description="Server administration")
+admin_roles_group = app_commands.Group(name="roles", description="Manage Elo roles and captains")
+admin_notes_group = app_commands.Group(name="notes", description="Manage player admin notes")
+admin_data_group = app_commands.Group(name="data", description="Backups, permissions, and diagnostics")
+admin_announcements_group = app_commands.Group(name="announcements", description="Configure leaderboard announcements")
+for _admin_subgroup in (admin_roles_group, admin_notes_group, admin_data_group, admin_announcements_group):
+    admin_group.add_command(_admin_subgroup)
 maps_group = app_commands.Group(name="maps", description="Maps, rotations, and vetoes")
 challenge_group = app_commands.Group(name="challenge", description="Player challenges")
 series_group = app_commands.Group(name="series", description="Track best-of series")
@@ -1774,7 +1780,7 @@ async def elo_rollback(interaction: discord.Interaction, adjustment_id: int):
     )
 
 
-@admin_group.command(name="roles_setup", description="Create Elo tier roles for a mode")
+@admin_roles_group.command(name="setup", description="Create Elo tier roles for a mode")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -2204,7 +2210,7 @@ async def challenge_decline(interaction: discord.Interaction, challenge_id: int)
     await interaction.response.send_message(f"Challenge **#{challenge_id}** declined.")
 
 
-@admin_group.command(name="captain_set", description="Set the captain for one side of a mode")
+@admin_roles_group.command(name="captain_set", description="Set the captain for one side of a mode")
 @app_commands.describe(mode="Game mode", team="Team side", captain="Player who can confirm for this side")
 @app_commands.choices(mode=mode_choices, team=[app_commands.Choice(name="Team 1", value="1"), app_commands.Choice(name="Team 2", value="2")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -2388,7 +2394,7 @@ async def match_vote(interaction: discord.Interaction, match_id: int, decision: 
     await interaction.response.send_message(f"Approval recorded for match **#{match_id}** ({len(confirmed)} confirmation(s)). Use `/match confirm match_id:{match_id}` when both sides have approved.")
 
 
-@admin_group.command(name="note_add", description="Add an admin note to a player")
+@admin_notes_group.command(name="add", description="Add an admin note to a player")
 @app_commands.describe(player="Player", note="Note text")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def note_add(interaction: discord.Interaction, player: discord.Member, note: str):
@@ -2397,7 +2403,7 @@ async def note_add(interaction: discord.Interaction, player: discord.Member, not
     await interaction.response.send_message(f"Added private admin note **#{note_id}** for {player.display_name}.", ephemeral=True)
 
 
-@admin_group.command(name="notes", description="View admin notes for a player")
+@admin_notes_group.command(name="list", description="View admin notes for a player")
 @app_commands.describe(player="Player")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def notes(interaction: discord.Interaction, player: discord.Member):
@@ -2408,7 +2414,7 @@ async def notes(interaction: discord.Interaction, player: discord.Member):
     await interaction.response.send_message("**Admin notes**\n" + "\n".join(f"#{row['id']} ({row['created_at'][:10]}): {row['note']}" for row in rows), ephemeral=True)
 
 
-@admin_group.command(name="note_delete", description="Delete an admin note")
+@admin_notes_group.command(name="delete", description="Delete an admin note")
 @app_commands.describe(note_id="Note number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def note_delete(interaction: discord.Interaction, note_id: int):
@@ -2864,7 +2870,7 @@ async def achievements(interaction: discord.Interaction, player: discord.Member 
     await interaction.response.send_message(f"**{member.display_name}'s achievements**\n" + "\n".join(dict.fromkeys(badges)))
 
 
-@admin_group.command(name="achievement_create", description="Create a server-specific achievement")
+@admin_data_group.command(name="achievement_create", description="Create a server-specific achievement")
 @app_commands.describe(name="Achievement name", metric="Progress metric", threshold="Required total")
 @app_commands.choices(metric=[app_commands.Choice(name="Games", value="games"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -2994,7 +3000,7 @@ async def mapplayer(interaction: discord.Interaction, mode: app_commands.Choice[
     await interaction.response.send_message(f"**{member.display_name} map analytics — {mode_label(mode.value)}**\n" + "\n".join(lines))
 
 
-@admin_group.command(name="announce", description="Post a leaderboard announcement")
+@admin_announcements_group.command(name="post", description="Post a leaderboard announcement")
 @app_commands.describe(mode="Game mode", metric="Leaderboard metric")
 @app_commands.choices(mode=mode_choices, metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Kills", value="kills")])
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -3152,7 +3158,7 @@ async def undo(interaction: discord.Interaction):
     await send_response(interaction, f"Undid match **#{removed['id']}** ({mode_label(removed['mode'])}). Re-enter it with `/match record` if needed.")
 
 
-@admin_group.command(name="audit", description="Show recent administrative bot actions")
+@admin_data_group.command(name="audit", description="Show recent administrative bot actions")
 @app_commands.describe(limit="Number of entries, from 1 to 20")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def audit(interaction: discord.Interaction, limit: int = 10):
@@ -3165,7 +3171,7 @@ async def audit(interaction: discord.Interaction, limit: int = 10):
     await interaction.response.send_message("**Recent audit log**\n" + "\n".join(lines))
 
 
-@admin_group.command(name="permission_set", description="Require a Discord role for a command")
+@admin_data_group.command(name="permission_set", description="Require a Discord role for a command")
 @app_commands.describe(command="Command name without slash", role="Required role")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def permission_set(interaction: discord.Interaction, command: str, role: discord.Role):
@@ -3174,7 +3180,7 @@ async def permission_set(interaction: discord.Interaction, command: str, role: d
     await interaction.response.send_message(f"Configured **/{command.lstrip('/')}** to require {role.mention} (managers can still use it).")
 
 
-@admin_group.command(name="backup_now", description="Create a database backup")
+@admin_data_group.command(name="backup_now", description="Create a database backup")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def backup_now(interaction: discord.Interaction):
     BACKUP_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -3184,7 +3190,7 @@ async def backup_now(interaction: discord.Interaction):
     await interaction.response.send_message(f"Created database backup `{destination.name}`.", ephemeral=True)
 
 
-@admin_group.command(name="backup_restore", description="Restore a database backup by filename")
+@admin_data_group.command(name="backup_restore", description="Restore a database backup by filename")
 @app_commands.describe(filename="Backup filename from the backup folder")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_restore(interaction: discord.Interaction, filename: str):
@@ -3328,7 +3334,7 @@ async def next_map(interaction: discord.Interaction):
     await interaction.response.send_message(f"Next map: **{selected}**" if selected else "No map rotation configured. Use `/rotation_set` first.")
 
 
-@admin_group.command(name="nickname_sync", description="Sync player nicknames with their Elo")
+@admin_roles_group.command(name="nickname_sync", description="Sync player nicknames with their Elo")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_nicknames=True)
@@ -3349,7 +3355,7 @@ async def nickname_sync(interaction: discord.Interaction, mode: app_commands.Cho
     await interaction.response.send_message(f"Updated {updated} nickname(s) for {mode_label(mode.value)}.")
 
 
-@admin_group.command(name="roles_cleanup", description="Remove outdated Elo tier roles")
+@admin_roles_group.command(name="cleanup", description="Remove outdated Elo tier roles")
 @app_commands.describe(mode="Game mode")
 @app_commands.choices(mode=mode_choices)
 @app_commands.checks.has_permissions(manage_roles=True)
@@ -3376,7 +3382,7 @@ async def health(interaction: discord.Interaction):
     await interaction.response.send_message(f"✅ Bot online\nDatabase: healthy\nRecorded matches: **{table_count}**\nDashboard: `http://<this-PC-IP>:{os.getenv('DASHBOARD_PORT', '5050')}`")
 
 
-@admin_group.command(name="integrity", description="Check database integrity")
+@admin_data_group.command(name="integrity", description="Check database integrity")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def integrity(interaction: discord.Interaction):
     result = bot.database.connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -3384,7 +3390,7 @@ async def integrity(interaction: discord.Interaction):
     await interaction.response.send_message(f"Database integrity: **{result}**\nOrphaned stat rows: **{orphaned}**")
 
 
-@admin_group.command(name="webhook_set", description="Configure a webhook for future announcements")
+@admin_data_group.command(name="webhook_set", description="Configure a webhook for future announcements")
 @app_commands.describe(url="Discord webhook URL")
 @app_commands.checks.has_permissions(manage_webhooks=True)
 async def webhook_set(interaction: discord.Interaction, url: str):
@@ -3395,7 +3401,7 @@ async def webhook_set(interaction: discord.Interaction, url: str):
     await interaction.response.send_message("Webhook saved for future bot notifications.", ephemeral=True)
 
 
-@admin_group.command(name="dashboard_share", description="Create a public read-only dashboard link")
+@admin_data_group.command(name="dashboard_share", description="Create a public read-only dashboard link")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def dashboard_share(interaction: discord.Interaction):
     token = bot.database.create_share(interaction.guild_id, interaction.user.id)
@@ -3440,7 +3446,7 @@ async def clips(interaction: discord.Interaction, mode: app_commands.Choice[str]
     await interaction.response.send_message("**Match clip gallery**\n" + "\n\n".join(lines))
 
 
-@admin_group.command(name="announcement_channel", description="Set the channel for scheduled leaderboard announcements")
+@admin_announcements_group.command(name="channel", description="Set the channel for scheduled leaderboard announcements")
 @app_commands.describe(channel="Announcement channel")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def announcement_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -3448,7 +3454,7 @@ async def announcement_channel(interaction: discord.Interaction, channel: discor
     await interaction.response.send_message(f"Leaderboard announcements will use {channel.mention}.", ephemeral=True)
 
 
-@admin_group.command(name="announcement_schedule", description="Schedule recurring leaderboard announcements")
+@admin_announcements_group.command(name="schedule", description="Schedule recurring leaderboard announcements")
 @app_commands.describe(mode="Game mode", interval_minutes="Minutes between announcements", metric="Ranking metric", channel="Optional destination channel")
 @app_commands.choices(mode=mode_choices)
 @app_commands.choices(metric=[app_commands.Choice(name="Elo", value="rating"), app_commands.Choice(name="Wins", value="wins"), app_commands.Choice(name="Win rate", value="winrate"), app_commands.Choice(name="Kills", value="kills"), app_commands.Choice(name="Damage", value="damage"), app_commands.Choice(name="Score", value="score"), app_commands.Choice(name="Assists", value="assists")])
@@ -3465,7 +3471,7 @@ async def announcement_schedule(interaction: discord.Interaction, mode: app_comm
     await interaction.response.send_message(f"Created announcement schedule **#{schedule_id}** in {target.mention} every **{interval_minutes} minutes**.", ephemeral=True)
 
 
-@admin_group.command(name="announcement_cancel", description="Cancel a scheduled leaderboard announcement")
+@admin_announcements_group.command(name="cancel", description="Cancel a scheduled leaderboard announcement")
 @app_commands.describe(schedule_id="Announcement schedule number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def announcement_cancel(interaction: discord.Interaction, schedule_id: int):
