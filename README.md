@@ -48,6 +48,9 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/challenge create`, `/challenge accept`, `/challenge decline` — manage challenges.
 - `/admin elo_add`, `/admin elo_subtract`, `/admin elo_history`, `/admin elo_rollback`, `/admin settings`, `/admin setelo`, `/admin maintenance` — core administrator tools. `/admin roles setup|cleanup|nickname_sync|captain_set`, `/admin notes add|list|delete`, `/admin data achievement_create|audit|permission_set|backup_now|backup_restore|integrity|webhook_set|dashboard_share`, and `/admin announcements post|channel|schedule|cancel` keep the admin command group within Discord's 25-child limit. Manual Elo changes require Administrator permission and a reason; rollbacks show a confirmation button and refuse to overwrite newer rating changes.
 - `/server modes`, `/server health`, `/server help_menu` — bot and server information.
+- `/competitive ...` — 25 read-only competitive views for ratings, streaks, modes, maps, teams, match activity, and stat leaders.
+- `/social ...` — 25 read-only community views for players, profiles, queues, lobbies, tournaments, series, maps, and saved coordination data.
+- `/moderation ...` — 25 read-only checks for database integrity, pending work, backups, permissions, webhooks, coverage, and configuration.
 - `/insights overview`, `/insights improvement`, `/insights clutch`, `/insights top_damage`, `/insights top_kills`, `/insights top_score`, `/insights top_assists`, `/insights top_captures`, `/insights top_breaks`, `/insights efficiency`, `/insights kd`, `/insights winrate`, `/insights map_winrate`, `/insights rank_distribution`, `/insights peak`, `/insights recent`, `/insights lastmatch`, `/insights maps`, `/insights teams`, `/insights pending` — additional performance, efficiency, coaching, rank-distribution, map, clutch, and match analytics.
 - `/ops summary`, `/ops players`, `/ops activity`, `/ops database`, `/ops backups`, `/ops seasons`, `/ops teams`, `/ops maps`, `/ops pending`, `/ops lobbies`, `/ops tournaments`, `/ops series`, `/ops challenges`, `/ops queue`, `/ops commands` — server operational summaries.
 - `/reports ...` — 25 compact match, player, stat, and activity totals, including latest/oldest match and mode breakdown.
@@ -57,7 +60,7 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/matchroom ...` — 25 live match-room views for scheduled games, queues, vetoes, drafts, confirmations, active sessions, settings, and database coverage.
 - `/career ...` — 25 personal commands for your summary, modes, K/D, win rate, streaks, peak Elo, maps, opponents, totals, and per-game averages.
 
-The bot now exposes 21 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name.
+The bot now exposes 24 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name. Each new feature area is capped at 25 commands to stay within Discord's command limits.
 
 Optional private rank art can be placed manually in `assets/ranks/` using `rank-1.png` through `rank-5.png` (or `1.png` through `5.png`). For convenience, the same files may also be placed beside `bot.py`. The bot checks those files when rendering match cards and otherwise uses the textual rank. The repository does not include or fetch the original copyrighted Gears 2 artwork.
 

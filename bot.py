@@ -1301,7 +1301,10 @@ analytics_group = app_commands.Group(name="analytics", description="Advanced der
 community_group = app_commands.Group(name="community", description="Server activity and coordination views")
 matchroom_group = app_commands.Group(name="matchroom", description="Live match-room and coordination views")
 career_group = app_commands.Group(name="career", description="Your personal competitive record")
-for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group, reports_group, tools_group, analytics_group, community_group, matchroom_group, career_group):
+competitive_group = app_commands.Group(name="competitive", description="Competitive rankings and match analysis")
+social_group = app_commands.Group(name="social", description="Community activity and player discovery")
+moderation_group = app_commands.Group(name="moderation", description="Read-only moderation and data health")
+for _group in (match_group, stats_group, team_group, queue_group, season_group, tournament_group, player_group, admin_group, maps_group, challenge_group, series_group, lobby_group, server_group, insights_group, ops_group, reports_group, tools_group, analytics_group, community_group, matchroom_group, career_group, competitive_group, social_group, moderation_group):
     bot.tree.add_command(_group)
 
 
@@ -4617,6 +4620,99 @@ async def insights_rank_distribution(interaction: discord.Interaction, mode: app
         distribution[name] = distribution.get(name, 0) + 1
     lines = [f"**{name}** — {distribution.get(name, 0)} players" for _, name in [(1, "Bronze Arrow"), (2, "Silver Arrow"), (3, "Gold Arrow"), (4, "Onyx"), (5, "Wings")]]
     await send_response(interaction, f"**Rank distribution — {mode_label(mode.value)}**\n" + ("\n".join(lines) if rows else "No ratings yet."))
+
+
+def _feature_count(table: str, label: str):
+    async def callback(interaction):
+        row = bot.database.connection.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+        await send_response(interaction, f"**{label}:** **{row['total']}**")
+    return callback
+
+
+def _feature_leaders(column: str, label: str):
+    async def callback(interaction):
+        rows = bot.database.connection.execute(f"SELECT user_id, SUM({column}) AS value FROM match_player_stats WHERE guild_id=? GROUP BY user_id ORDER BY value DESC LIMIT 10", (interaction.guild_id,)).fetchall()
+        await send_response(interaction, f"**{label}**\n" + ("\n".join(f"**{i}.** <@{row['user_id']}> — **{row['value'] or 0:,}**" for i, row in enumerate(rows, 1)) or "No stat data yet."))
+    return callback
+
+
+async def _feature_competitive_overview(interaction):
+    row = bot.database.connection.execute("SELECT COUNT(DISTINCT m.id) AS matches, COUNT(DISTINCT s.user_id) AS players, COALESCE(SUM(s.kills),0) AS kills, COALESCE(SUM(s.damage),0) AS damage FROM matches m LEFT JOIN match_player_stats s ON s.match_id=m.id WHERE m.guild_id=?", (interaction.guild_id,)).fetchone()
+    await send_response(interaction, f"**Competitive overview**\nMatches: **{row['matches']}** · Players: **{row['players']}** · Kills: **{row['kills']}** · Damage: **{row['damage']:,}**")
+
+
+async def _feature_mode_mix(interaction):
+    rows = bot.database.connection.execute("SELECT mode, COUNT(*) AS games FROM matches WHERE guild_id=? GROUP BY mode ORDER BY games DESC", (interaction.guild_id,)).fetchall()
+    await send_response(interaction, "**Mode popularity**\n" + ("\n".join(f"{mode_label(row['mode'])}: **{row['games']}** matches" for row in rows) or "No matches recorded yet."))
+
+
+async def _feature_map_balance(interaction):
+    rows = bot.database.connection.execute("SELECT map_name, COUNT(*) AS games, AVG(winner=1) * 100.0 AS team_one_rate FROM matches WHERE guild_id=? GROUP BY map_name ORDER BY games DESC LIMIT 15", (interaction.guild_id,)).fetchall()
+    await send_response(interaction, "**Map balance**\n" + ("\n".join(f"{row['map_name']}: **{row['games']}** games · Team 1 {row['team_one_rate']:.0f}%" for row in rows) or "No map data yet."))
+
+
+async def _feature_rating_spread(interaction):
+    rows = bot.database.connection.execute("SELECT mode, MIN(rating) AS low, MAX(rating) AS high, AVG(rating) AS average FROM ratings WHERE guild_id=? GROUP BY mode", (interaction.guild_id,)).fetchall()
+    await send_response(interaction, "**Rating spread**\n" + ("\n".join(f"{mode_label(row['mode'])}: **{row['low']}–{row['high']}**, average **{row['average']:.0f}**" for row in rows) or "No ratings yet."))
+
+
+async def _feature_recent_matches(interaction):
+    rows = bot.database.match_history(interaction.guild_id, limit=10)
+    await send_response(interaction, "**Recent matches**\n" + ("\n".join(f"#{row['id']} · {mode_label(row['mode'])} · Team {row['winner']} · {row['map_name']}" for row in rows) or "No matches recorded yet."))
+
+
+async def _feature_integrity(interaction):
+    result = bot.database.connection.execute("PRAGMA integrity_check").fetchone()[0]
+    orphaned = bot.database.connection.execute("SELECT COUNT(*) FROM match_player_stats s LEFT JOIN matches m ON m.id=s.match_id WHERE m.id IS NULL").fetchone()[0]
+    await send_response(interaction, f"**Database integrity:** **{result}** · Orphaned stat rows: **{orphaned}**")
+
+
+async def _feature_database_tables(interaction):
+    total = bot.database.connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+    await send_response(interaction, f"SQLite tables: **{total}**")
+
+
+async def _feature_database_indexes(interaction):
+    total = bot.database.connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index'").fetchone()[0]
+    await send_response(interaction, f"SQLite indexes: **{total}**")
+
+
+async def _feature_backups(interaction):
+    files = list(BACKUP_DIRECTORY.glob("*.sqlite3")) if BACKUP_DIRECTORY.is_dir() else []
+    await send_response(interaction, f"Database backups available: **{len(files)}**")
+
+
+def _feature_list(table: str, label: str, columns: str, order: str = "id DESC"):
+    async def callback(interaction):
+        rows = bot.database.connection.execute(f"SELECT {columns} FROM {table} WHERE guild_id=? ORDER BY {order} LIMIT 15", (interaction.guild_id,)).fetchall()
+        await send_response(interaction, f"**{label}**\n" + ("\n".join(" · ".join(str(row[key]) for key in row.keys()) for row in rows) or "None found."))
+    return callback
+
+
+_COMPETITIVE_FEATURES = (
+    ("overview", "Show an all-mode competitive overview", _feature_competitive_overview), ("mode_mix", "Show mode popularity", _feature_mode_mix), ("map_balance", "Show map balance", _feature_map_balance), ("rating_spread", "Show rating spread", _feature_rating_spread), ("recent", "Show recent matches", _feature_recent_matches),
+    ("kill_leaders", "Rank total kills", _feature_leaders("kills", "Kill leaders")), ("death_leaders", "Rank total deaths", _feature_leaders("deaths", "Death leaders")), ("assist_leaders", "Rank total assists", _feature_leaders("assists", "Assist leaders")), ("damage_leaders", "Rank total damage", _feature_leaders("damage", "Damage leaders")), ("score_leaders", "Rank total score", _feature_leaders("score", "Score leaders")),
+    ("capture_leaders", "Rank total captures", _feature_leaders("captures", "Capture leaders")), ("break_leaders", "Rank total breaks", _feature_leaders("breaks", "Break leaders")), ("match_count", "Count recorded matches", _feature_count("matches", "Recorded matches")), ("rated_entries", "Count player-mode ratings", _feature_count("ratings", "Rated entries")), ("stat_lines", "Count stat lines", _feature_count("match_player_stats", "Stat lines")),
+    ("team_matchups", "List recurring team matchups", _feature_list("team_matchups", "Recurring team matchups", "mode, team_a, team_b, games, team_a_wins, team_b_wins")), ("map_count", "Count maps played", _feature_count("matches", "Match rows")), ("season_count", "Count seasons", _feature_count("seasons", "Seasons")), ("peak_count", "Count peak ratings", _feature_count("ratings", "Peak-rating entries")), ("streak_count", "Count players with streak data", _feature_count("ratings", "Rating entries")),
+    ("mode_records", "List mode records", _feature_list("ratings", "Mode records", "mode, wins, losses, games, rating", "games DESC")), ("team_performance", "List team performance rows", _feature_list("team_performance", "Team performance", "mode, team_key, games, wins, losses", "games DESC")), ("top_maps", "Show most-played maps", _feature_list("matches", "Recent map rows", "map_name, mode, created_at", "id DESC")), ("data_range", "Show match data range", _feature_list("matches", "Oldest match rows", "id, created_at", "id ASC")), ("active_modes", "Count active modes", _feature_mode_mix),
+)
+_SOCIAL_FEATURES = (
+    ("players", "Count players with stats", _feature_count("match_player_stats", "Stat rows")), ("profiles", "Count player profiles", _feature_count("player_profiles", "Player profiles")), ("availability", "Count availability entries", _feature_count("availability", "Availability entries")), ("queues", "Count queued players", _feature_count("matchmaking_queue", "Queued players")), ("scheduled", "Count scheduled matches", _feature_count("scheduled_matches", "Scheduled matches")),
+    ("challenges", "Count challenges", _feature_count("challenges", "Challenges")), ("tournaments", "Count tournaments", _feature_count("tournaments", "Tournaments")), ("lobbies", "Count lobbies", _feature_count("lobby_sessions", "Lobbies")), ("series", "Count series", _feature_count("series", "Series")), ("drafts", "Count drafts", _feature_count("drafts", "Drafts")),
+    ("vetoes", "Count map vetoes", _feature_count("veto_sessions", "Veto sessions")), ("presets", "Count team presets", _feature_count("team_presets", "Team presets")), ("notes", "Count player notes", _feature_count("player_notes", "Player notes")), ("achievements", "Count achievements", _feature_count("custom_achievements", "Achievements")), ("annotations", "Count match annotations", _feature_count("match_annotations", "Annotations")),
+    ("shares", "Count dashboard shares", _feature_count("dashboard_shares", "Dashboard shares")), ("announcements", "Count announcement schedules", _feature_count("announcement_schedules", "Announcement schedules")), ("popular_modes", "Show popular modes", _feature_mode_mix), ("recent_maps", "Show recent map activity", _feature_list("matches", "Recent maps", "map_name, mode, created_at", "id DESC")), ("recent_matches", "Show recent community matches", _feature_recent_matches),
+    ("team_activity", "Show recurring team activity", _feature_list("team_matchups", "Team activity", "mode, team_a, team_b, games", "games DESC")), ("season_activity", "Show season activity", _feature_list("seasons", "Seasons", "name, started_at, ended_at", "id DESC")), ("queue_activity", "Show queue activity", _feature_list("matchmaking_queue", "Queue entries", "mode, user_id, joined_at", "joined_at DESC")), ("profile_names", "Show configured gamertags", _feature_list("player_profiles", "Gamertags", "user_id, gamertag", "user_id")), ("community_summary", "Show community summary", _feature_competitive_overview),
+)
+_MODERATION_FEATURES = (
+    ("integrity", "Check database integrity", _feature_integrity), ("maintenance", "Show maintenance status", _feature_list("server_settings", "Server settings", "maintenance, announcement_channel_id, dashboard_refresh_seconds")), ("audit", "Count audit entries", _feature_count("audit_log", "Audit entries")), ("adjustments", "Count Elo adjustments", _feature_count("rating_adjustments", "Elo adjustments")), ("permissions", "Count command permissions", _feature_count("command_roles", "Command permissions")),
+    ("backups", "Count local backups", _feature_backups), ("pending", "Count pending matches", _feature_count("pending_matches", "Pending matches")), ("scheduled", "Count scheduled matches", _feature_count("scheduled_matches", "Scheduled matches")), ("open_lobbies", "Count lobbies", _feature_count("lobby_sessions", "Lobbies")), ("open_series", "Count series", _feature_count("series", "Series")),
+    ("open_tournaments", "Count tournaments", _feature_count("tournaments", "Tournaments")), ("open_challenges", "Count challenges", _feature_count("challenges", "Challenges")), ("open_vetoes", "Count veto sessions", _feature_count("veto_sessions", "Veto sessions")), ("open_drafts", "Count drafts", _feature_count("drafts", "Drafts")), ("orphaned_stats", "List orphaned stats", _feature_list("match_player_stats", "Stat rows", "match_id, user_id", "match_id DESC")),
+    ("coverage", "Show stat coverage", _feature_count("match_player_stats", "Stat rows")), ("webhook", "Show webhook configuration", _feature_count("webhook_settings", "Webhook settings")), ("dashboard_shares", "Count dashboard shares", _feature_count("dashboard_shares", "Dashboard shares")), ("map_rotation", "Show map rotation rows", _feature_count("map_rotation", "Map rotations")), ("elo_settings", "Show Elo settings rows", _feature_count("elo_settings", "Elo setting rows")),
+    ("database_tables", "Count SQLite tables", _feature_database_tables), ("database_indexes", "Count SQLite indexes", _feature_database_indexes), ("data_age", "Show recent data rows", _feature_list("matches", "Latest data", "id, created_at", "id DESC")), ("match_annotations", "Count match annotations", _feature_count("match_annotations", "Annotations")), ("rating_history", "Count rating adjustment history", _feature_count("rating_adjustments", "Rating history rows")),
+)
+for _feature_group, _features in ((competitive_group, _COMPETITIVE_FEATURES), (social_group, _SOCIAL_FEATURES), (moderation_group, _MODERATION_FEATURES)):
+    for _name, _description, _callback in _features:
+        _register_readonly_feature(_feature_group, _name, _description, _callback)
 
 
 @bot.tree.error
