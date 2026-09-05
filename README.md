@@ -93,3 +93,9 @@ To check a recurring matchup, use `/stats teamstats`. For example: `/stats teams
 Control requires `captures`, `breaks`, `kills`, `deaths`, `assists`, `damage`, and `score` on every line.
 
 After updating, restart the bot so Discord can sync the grouped command tree. The first guild-scoped sync is immediate when `DISCORD_GUILD_ID` is set; global sync can take longer.
+
+### Searchable match history
+
+Open **Match history** in the dashboard to browse older results, filter by mode, exact map name (case insensitive), or Discord player ID. Filters combine and remain active when loading older matches. Player filtering includes legacy matches without stat rows.
+
+`/api/matches` keeps its JSON array response and accepts `mode`, `map`, `player`, `limit` (1–100, default 25), and `before` (exclusive match ID). Follow the `Link` response header with `rel="next"` for the next page; it is omitted on the last page. Unknown modes and invalid player/cursor IDs return HTTP 400. Guild filtering continues to use `guild_id` or `DASHBOARD_GUILD_ID`.
