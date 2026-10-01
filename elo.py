@@ -15,7 +15,13 @@ MODES: dict[str, dict[str, object]] = {
     "control_4v4": {"label": "Control 4v4", "team_size": 4},
     "gnashers_1v1": {"label": "1v1 Gnashers", "team_size": 1},
     "gnashers_2v2": {"label": "2v2 Gnashers", "team_size": 2},
+    "eday_tdm_4v4": {"label": "E-Day Team Deathmatch 4v4", "team_size": 4},
+    "eday_conquest_4v4": {"label": "E-Day Conquest 4v4", "team_size": 4},
+    "eday_demolition_4v4": {"label": "E-Day Demolition 4v4", "team_size": 4},
+    "eday_crucible_4v4": {"label": "E-Day Crucible 4v4", "team_size": 4},
 }
+EDAY_VERSUS_MAPS = ("Outpost", "Battleship", "Park", "Precinct", "Market", "Skyward")
+EDAY_MODES = frozenset({"eday_tdm_4v4", "eday_conquest_4v4", "eday_demolition_4v4", "eday_crucible_4v4"})
 MENTION_RE = re.compile(r"^(?:<@!?(\d+)>|(\d+))$")
 CONTROL_STATS = ("captures", "breaks", "kills", "deaths", "assists", "damage", "score")
 GNASHERS_STATS = ("kills", "deaths", "damage", "score")
@@ -175,6 +181,8 @@ def canonical_matchup(team_one: Iterable[int], team_two: Iterable[int]) -> tuple
 def stat_names(mode: str) -> tuple[str, ...]:
     if mode.startswith("control_"):
         return CONTROL_STATS
+    if mode in EDAY_MODES:
+        return GNASHERS_2V2_STATS
     return GNASHERS_2V2_STATS if mode == "gnashers_2v2" else GNASHERS_STATS
 
 

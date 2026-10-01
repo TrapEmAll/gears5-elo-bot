@@ -18,7 +18,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from elo import MODES, balance_teams, calculate_match_changes, calculate_trueskill_changes, canonical_matchup, expected_score, gow2_rank, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_key, team_size, trueskill_display, TRUESKILL_MU, TRUESKILL_SIGMA
+from elo import EDAY_VERSUS_MAPS, MODES, balance_teams, calculate_match_changes, calculate_trueskill_changes, canonical_matchup, expected_score, gow2_rank, mode_label, parse_player_list, parse_player_stats, parse_team, stat_names, team_key, team_size, trueskill_display, TRUESKILL_MU, TRUESKILL_SIGMA
 
 load_dotenv()
 
@@ -1261,7 +1261,9 @@ queues: dict[tuple[int, str], list[int]] = {}
 
 async def map_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     rows = bot.database.connection.execute("SELECT DISTINCT map_name FROM matches WHERE guild_id=? AND map_name<>'' AND map_name<>'Unknown' AND map_name LIKE ? ORDER BY map_name LIMIT 25", (interaction.guild_id, f"%{current}%")).fetchall()
-    return [app_commands.Choice(name=row["map_name"][:100], value=row["map_name"][:100]) for row in rows]
+    known = [name for name in EDAY_VERSUS_MAPS if current.casefold() in name.casefold()]
+    known.extend(row["map_name"] for row in rows if row["map_name"] not in known)
+    return [app_commands.Choice(name=name[:100], value=name[:100]) for name in known[:25]]
 
 
 async def match_id_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -1630,7 +1632,7 @@ class PlayerStatsModal(discord.ui.Modal):
         super().__init__(title=f"Stats: {name}"[:45], timeout=600)
         self.stat_input = discord.ui.TextInput(
             label=f"Enter stats for {name}"[:45],
-            placeholder=("kills=15 deaths=8 assists=4 damage=500 score=250" if mode == "gnashers_2v2" else "kills=15 deaths=8 damage=500 score=250") if mode.startswith("gnashers_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 damage=500 score=250",
+            placeholder=("kills=15 deaths=8 assists=4 damage=500 score=250" if mode == "gnashers_2v2" or mode.startswith("eday_") else "kills=15 deaths=8 damage=500 score=250") if mode.startswith("gnashers_") or mode.startswith("eday_") else "captures=3 breaks=5 kills=15 deaths=8 assists=7 damage=500 score=250",
             style=discord.TextStyle.short,
             required=True,
             max_length=500,

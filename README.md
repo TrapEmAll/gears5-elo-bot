@@ -60,6 +60,8 @@ If commands still do not appear, create a fresh invite from **OAuth2 → URL Gen
 - `/matchroom ...` — 25 live match-room views for scheduled games, queues, vetoes, drafts, confirmations, active sessions, settings, and database coverage.
 - `/career ...` — 25 personal commands for your summary, modes, K/D, win rate, streaks, peak Elo, maps, opponents, totals, and per-game averages.
 
+E-Day support includes separate Elo ladders for Team Deathmatch, Conquest, Demolition, and Crucible (all 4v4). Map autocomplete includes the launch Versus maps Outpost, Battleship, Park, Precinct, Market, and Skyward. Horde Siege is a cooperative 12-player PvE mode and is intentionally not represented as a two-team Elo ladder.
+
 The bot now exposes 24 top-level command groups instead of registering every feature globally. Discord will show the available subcommands after you type the group name. Each new feature area is capped at 25 commands to stay within Discord's command limits.
 
 Optional private rank art can be placed manually in `assets/ranks/` using `rank-1.png` through `rank-5.png` (or `1.png` through `5.png`). For convenience, the same files may also be placed beside `bot.py`. The bot checks those files when rendering match cards and otherwise uses the textual rank. The repository does not include or fetch the original copyrighted Gears 2 artwork.

@@ -7,7 +7,7 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, render_template_string, request
 
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "gears5_elo.sqlite3"))
-MODES = {"control_1v1": "Control 1v1", "control_3v3": "Control 3v3", "control_4v4": "Control 4v4", "gnashers_1v1": "1v1 Gnashers", "gnashers_2v2": "2v2 Gnashers"}
+MODES = {"control_1v1": "Control 1v1", "control_3v3": "Control 3v3", "control_4v4": "Control 4v4", "gnashers_1v1": "1v1 Gnashers", "gnashers_2v2": "2v2 Gnashers", "eday_tdm_4v4": "E-Day Team Deathmatch 4v4", "eday_conquest_4v4": "E-Day Conquest 4v4", "eday_demolition_4v4": "E-Day Demolition 4v4", "eday_crucible_4v4": "E-Day Crucible 4v4"}
 app = Flask(__name__)
 
 
