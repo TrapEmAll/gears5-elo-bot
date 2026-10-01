@@ -1,6 +1,6 @@
 import unittest
 
-from elo import balance_teams, calculate_match_changes, canonical_matchup, parse_match_stats, parse_player_stats, parse_team, team_key
+from elo import EDAY_VERSUS_MAPS, MODES, balance_teams, calculate_match_changes, canonical_matchup, parse_match_stats, parse_player_stats, parse_team, stat_names, team_key, team_size
 
 
 class EloTests(unittest.TestCase):
@@ -61,6 +61,17 @@ class EloTests(unittest.TestCase):
         self.assertEqual(len(team_one), 2)
         self.assertEqual(len(team_two), 2)
         self.assertEqual(sum(dict([(1, 1200), (2, 1100), (3, 1000), (4, 900)])[player] for player in team_one), 2100)
+
+    def test_e_day_versus_modes_are_four_v_four_and_rated(self):
+        for mode in ("eday_tdm_4v4", "eday_conquest_4v4", "eday_demolition_4v4", "eday_crucible_4v4"):
+            self.assertIn(mode, MODES)
+            self.assertEqual(team_size(mode), 4)
+            self.assertEqual(stat_names(mode), ("kills", "deaths", "assists", "damage", "score"))
+            changes = calculate_match_changes(mode, [(i, 1000) for i in range(4)], [(i, 10) for i in range(4, 8)], 1)
+            self.assertEqual(len(changes), 8)
+
+    def test_e_day_map_pool(self):
+        self.assertEqual(EDAY_VERSUS_MAPS, ("Outpost", "Battleship", "Park", "Precinct", "Market", "Skyward"))
 
 
 if __name__ == "__main__":
